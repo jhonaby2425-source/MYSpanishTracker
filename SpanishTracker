@@ -1,0 +1,2755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Spanish Quiz Tracker</title>
+<!--
+  Content-Security-Policy note: this app has no build step — React/Babel are
+  loaded from a CDN and JSX is compiled in-browser by Babel Standalone from
+  inline <script type="text/babel"> tags. That architecture requires
+  'unsafe-inline' in script-src (there is no bundler to move the code to an
+  external file with a hash/nonce). Everything else below is scoped as
+  tightly as the app actually needs — no wildcard hosts, no 'unsafe-eval',
+  no third-party script origins beyond the CDN and Google's auth script.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://accounts.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://www.googleapis.com https://oauth2.googleapis.com https://accounts.google.com; frame-src https://accounts.google.com; base-uri 'none'; form-action 'self';">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<!-- Google Identity Services: powers the "Connect Google Drive" sign-in popup used by the sync module below. -->
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+  html, body { margin:0; padding:0; background: #EFEDE7; }
+  #root { min-height:100vh; display:flex; align-items:flex-start; justify-content:center; padding: 24px 12px; }
+  @media (max-width: 600px) { #root { padding: 10px 6px; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+  // ---- localStorage-backed shim matching the window.storage API ----
+  window.storage = {
+    async get(key, shared) {
+      try {
+        const raw = localStorage.getItem((shared ? "shared:" : "") + key);
+        if (raw === null || raw === undefined) return null;
+        return { key, value: raw, shared: !!shared };
+      } catch (e) { throw e; }
+    },
+    async set(key, value, shared) {
+      localStorage.setItem((shared ? "shared:" : "") + key, value);
+      return { key, value, shared: !!shared };
+    },
+    async delete(key, shared) {
+      localStorage.removeItem((shared ? "shared:" : "") + key);
+      return { key, deleted: true, shared: !!shared };
+    },
+    async list(prefix, shared) {
+      const pfx = (shared ? "shared:" : "") + (prefix || "");
+      const keys = Object.keys(localStorage).filter((k) => k.startsWith(pfx)).map((k) => k.replace(/^shared:/, ""));
+      return { keys, prefix, shared: !!shared };
+    },
+  };
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+
+/* ---------- tiny inline icon set (no external icon library needed) ---------- */
+function Icon({ name, size = 15, ...props }) {
+  const common = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", ...props };
+  switch (name) {
+    case "plus": return <svg {...common}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>;
+    case "trash": return <svg {...common}><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>;
+    case "check": return <svg {...common}><polyline points="20 6 9 17 4 12"/></svg>;
+    case "repeat": return <svg {...common}><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>;
+    case "filter": return <svg {...common}><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>;
+    case "x": return <svg {...common}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
+    case "chevronDown": return <svg {...common}><polyline points="6 9 12 15 18 9"/></svg>;
+    case "chevronLeft": return <svg {...common}><polyline points="15 18 9 12 15 6"/></svg>;
+    case "chevronRight": return <svg {...common}><polyline points="9 18 15 12 9 6"/></svg>;
+    case "shuffle": return <svg {...common}><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>;
+    case "table": return <svg {...common}><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="9" y1="10" x2="9" y2="20"/></svg>;
+    case "calendar": return <svg {...common}><rect x="3" y="5" width="18" height="16" rx="2"/><line x1="16" y1="3" x2="16" y2="7"/><line x1="8" y1="3" x2="8" y2="7"/><line x1="3" y1="10" x2="21" y2="10"/></svg>;
+    case "calendarDays": return <svg {...common}><rect x="3" y="5" width="18" height="16" rx="2"/><line x1="16" y1="3" x2="16" y2="7"/><line x1="8" y1="3" x2="8" y2="7"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="14" x2="8" y2="14"/><line x1="12" y1="14" x2="12" y2="14"/><line x1="16" y1="14" x2="16" y2="14"/><line x1="8" y1="17" x2="8" y2="17"/><line x1="12" y1="17" x2="12" y2="17"/></svg>;
+    case "edit": return <svg {...common}><path d="M11 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>;
+    case "copy": return <svg {...common}><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>;
+    case "settings": return <svg {...common}><line x1="4" y1="6" x2="20" y2="6"/><circle cx="9" cy="6" r="2" fill="currentColor" stroke="none"/><line x1="4" y1="12" x2="20" y2="12"/><circle cx="16" cy="12" r="2" fill="currentColor" stroke="none"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="10" cy="18" r="2" fill="currentColor" stroke="none"/></svg>;
+    case "columns": return <svg {...common}><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/><line x1="15" y1="4" x2="15" y2="20"/></svg>;
+    case "book": return <svg {...common}><path d="M2 4.5C2 3.7 2.7 3 3.5 3H10a3 3 0 0 1 3 3v14a2.5 2.5 0 0 0-2.5-2.5H2z"/><path d="M22 4.5c0-.8-.7-1.5-1.5-1.5H14a3 3 0 0 0-3 3v14a2.5 2.5 0 0 1 2.5-2.5H22z"/></svg>;
+    case "search": return <svg {...common}><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>;
+    case "download": return <svg {...common}><path d="M12 3v12"/><polyline points="7 11 12 16 17 11"/><path d="M5 21h14"/></svg>;
+    case "upload": return <svg {...common}><path d="M12 15V3"/><polyline points="7 8 12 3 17 8"/><path d="M5 21h14"/></svg>;
+    case "alertCircle": return <svg {...common}><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><circle cx="12" cy="16.3" r="0.6" fill="currentColor" stroke="none"/></svg>;
+    case "cloud": return <svg {...common}><path d="M17.5 19H8a5 5 0 1 1 1.3-9.8 6 6 0 0 1 11.2 2.6A4 4 0 0 1 19.5 19h-2z"/></svg>;
+    case "flame": return <svg {...common}><path d="M12 2c1 3-2 4-2 7a4 4 0 0 0 8 0c0-1-1-2-1-2 1.5 1 2.5 3 2.5 5a6.5 6.5 0 0 1-13 0c0-4 2.5-5 3-8 .3-1.6 1.5-2.5 2.5-2z"/></svg>;
+    case "minus": return <svg {...common}><line x1="5" y1="12" x2="19" y2="12"/></svg>;
+    case "link": return <svg {...common}><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.5-1.5"/></svg>;
+    case "history": return <svg {...common}><path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 9 8 9"/><polyline points="12 8 12 12 15 14"/></svg>;
+    case "more": return <svg {...common}><circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none"/></svg>;
+    case "sliders": return <svg {...common}><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>;
+    case "arrowUp": return <svg {...common}><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>;
+    case "arrowDown": return <svg {...common}><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>;
+    case "arrowUpDown": return <svg {...common}><polyline points="7 9 12 4 17 9"/><polyline points="7 15 12 20 17 15"/></svg>;
+    case "barChart": return <svg {...common}><line x1="4" y1="20" x2="20" y2="20"/><rect x="6" y="12" width="3" height="7"/><rect x="11" y="8" width="3" height="11"/><rect x="16" y="4" width="3" height="15"/></svg>;
+    default: return null;
+  }
+}
+
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const TODAY_IDX = (new Date().getDay() + 6) % 7;
+
+const DEFAULT_SUBJECTS = [
+  { id: "sub-lessons", name: "Spanish Lessons Series", icon: "📘", color: "#1F6F63", soft: "#DCEFE9", passThreshold: null },
+  { id: "sub-exams", name: "Spanish Exam Series", icon: "📝", color: "#D48A1F", soft: "#FBE9CE", passThreshold: null },
+  { id: "sub-estar", name: "Spanish Estar", icon: "🌱", color: "#C23B6B", soft: "#FBE0EA", passThreshold: null },
+];
+
+const DEFAULT_SETTINGS = {
+  passingThreshold: 80,
+  visibleColumns: { subject: true, dueDate: true, routine: true, score: true, status: true },
+};
+
+const uid = (p = "id") => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+// Given a full quiz name and the list of existing quiz names in the project,
+// returns the next available "Name (N)" variant that doesn't collide with
+// anything already in the list. The original name is NEVER altered/stripped —
+// e.g. "Spanish INT-2" -> "Spanish INT-2 (1)" -> "Spanish INT-2 (2)", even if
+// other unrelated quizzes named "Spanish INT-1", "Spanish INT-3", etc. exist.
+// If this name is itself already a "(N)" duplicate, we still just keep
+// appending after the full name (so re-duplicating "X (1)" tries "X (1) (1)"),
+// rather than trying to parse/reuse a "base" name.
+const getNextDuplicateName = (sourceName, existingNames) => {
+  const nameSet = new Set(existingNames.map((n) => (n || "").trim().toLowerCase()));
+  let n = 1;
+  let candidate = `${sourceName} (${n})`;
+  while (nameSet.has(candidate.trim().toLowerCase())) {
+    n += 1;
+    candidate = `${sourceName} (${n})`;
+  }
+  return candidate;
+};
+
+/* ---------- grading helpers ----------
+   A quiz can be graded two ways:
+   1) Item-based (recommended): totalItems + correctItems -> percent is computed automatically.
+   2) Direct percent: a manually entered score, for quizzes without a fixed item count.
+   Whichever is present is used; item-based always takes priority if both exist. */
+function getScorePercent(q) {
+  if (typeof q.totalItems === "number" && q.totalItems > 0 && typeof q.correctItems === "number") {
+    return Math.round((q.correctItems / q.totalItems) * 1000) / 10;
+  }
+  if (typeof q.score === "number") return q.score;
+  return null;
+}
+function getThreshold(subject, settings) {
+  if (subject && typeof subject.passThreshold === "number") return subject.passThreshold;
+  return settings.passingThreshold;
+}
+function getGrade(q, subject, settings) {
+  const percent = getScorePercent(q);
+  if (percent === null) return null;
+  const threshold = getThreshold(subject, settings);
+  return { percent, threshold, pass: percent >= threshold };
+}
+/* Status is fully derived — never a mystery toggle:
+   - "incomplete": not marked done, and (no due date, or due date hasn't passed)
+   - "overdue": not marked done, and the due date has passed
+   - "passed" / "failed": marked done, graded, compared against the pass threshold
+   - "completed": marked done, not graded (nothing to compare) */
+function getQuizStatus(q, subject, settings, todayISO) {
+  if (!q.completed) {
+    if (q.dueDate && q.dueDate < todayISO) return "overdue";
+    return "incomplete";
+  }
+  if (q.trackScore) {
+    const grade = getGrade(q, subject, settings);
+    if (grade) return grade.pass ? "passed" : "failed";
+  }
+  return "completed";
+}
+const STATUS_META = {
+  incomplete: { label: "Incomplete", color: "var(--ink-soft)", soft: "var(--paper)" },
+  overdue: { label: "Overdue", color: "var(--rose)", soft: "var(--rose-soft)" },
+  completed: { label: "Done", color: "var(--teal)", soft: "var(--teal-soft)" },
+  passed: { label: "Passed", color: "var(--teal)", soft: "var(--teal-soft)" },
+  failed: { label: "Failed", color: "var(--rose)", soft: "var(--rose-soft)" },
+};
+
+/* ---------- normalization / migration ----------
+   Accepts data from any prior version of this app (raw "item" + flat "score")
+   and coerces it into the current shape so old backups and old localStorage
+   data always load safely instead of crashing the UI. */
+function normalizeSubject(s) {
+  return {
+    id: s.id || uid("sub"),
+    name: s.name || "Untitled subject",
+    icon: s.icon || "📘",
+    color: s.color || "#1F6F63",
+    soft: s.soft || "#E4EFEC",
+    passThreshold: typeof s.passThreshold === "number" ? s.passThreshold : null,
+  };
+}
+function normalizeQuiz(q) {
+  const totalItems = typeof q.totalItems === "number" ? q.totalItems : (typeof q.item === "number" ? q.item : null);
+  let correctItems = typeof q.correctItems === "number" ? q.correctItems : null;
+  let score = typeof q.score === "number" ? q.score : null;
+  if (totalItems !== null && correctItems === null && score !== null) {
+    correctItems = Math.round((score / 100) * totalItems);
+    score = null;
+  }
+  if (totalItems !== null) score = null;
+  return {
+    id: q.id || uid("q"),
+    name: q.name || "Untitled quiz",
+    subjectId: q.subjectId || "",
+    dueDate: q.dueDate || "",
+    isRoutine: !!q.isRoutine,
+    scheduledDay: q.scheduledDay || null,
+    completed: !!q.completed,
+    trackScore: !!q.trackScore,
+    totalItems, correctItems, score,
+    description: q.description || "",
+    link: q.link || "",
+    // completedAt / completedWeek track *when* the current completion happened so
+    // routine quizzes can be auto-reset once the ISO week rolls over (see
+    // performWeeklyRollover). One-off quizzes just keep completedAt as a record.
+    completedAt: q.completedAt || null,
+    completedWeek: q.completedWeek || null,
+  };
+}
+function normalizeHistoryEntry(h) {
+  return {
+    id: h.id || uid("hist"),
+    quizId: h.quizId || "",
+    quizName: h.quizName || "Untitled quiz",
+    subjectId: h.subjectId || "",
+    week: h.week || "",
+    date: h.date || null,
+    trackScore: !!h.trackScore,
+    totalItems: typeof h.totalItems === "number" ? h.totalItems : null,
+    correctItems: typeof h.correctItems === "number" ? h.correctItems : null,
+    score: typeof h.score === "number" ? h.score : null,
+    link: h.link || "",
+  };
+}
+/* ISO 8601 week key, e.g. "2026-W28". Used to detect when a routine quiz's
+   completion belongs to a previous week so it can be archived and reset. */
+function getISOWeek(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = (d.getUTCDay() + 6) % 7;
+  d.setUTCDate(d.getUTCDate() - dayNum + 3);
+  const firstThursday = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
+  const weekNum = 1 + Math.round(((d - firstThursday) / 86400000 - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7);
+  return `${d.getUTCFullYear()}-W${String(weekNum).padStart(2, "0")}`;
+}
+function normalizeSettings(s) {
+  const base = s || {};
+  return {
+    passingThreshold: typeof base.passingThreshold === "number" ? base.passingThreshold : DEFAULT_SETTINGS.passingThreshold,
+    visibleColumns: { ...DEFAULT_SETTINGS.visibleColumns, ...(base.visibleColumns || {}) },
+  };
+}
+
+const seedQuizzes = () => [
+  { id: uid("q"), name: "Lesson INT-4", subjectId: "sub-lessons", dueDate: "", isRoutine: true, scheduledDay: "Mon", completed: false, trackScore: false, totalItems: 570, correctItems: null, score: null, description: "ROUTINE", link: "", completedAt: null, completedWeek: null },
+  { id: uid("q"), name: "Spanish INT-3", subjectId: "sub-exams", dueDate: "", isRoutine: true, scheduledDay: "Wed", completed: true, trackScore: true, totalItems: 451, correctItems: 397, score: null, description: "ROUTINE", link: "", completedAt: null, completedWeek: getISOWeek(new Date()) },
+  { id: uid("q"), name: "Lesson INT-3", subjectId: "sub-lessons", dueDate: "", isRoutine: true, scheduledDay: "Mon", completed: false, trackScore: false, totalItems: 554, correctItems: null, score: null, description: "ROUTINE", link: "", completedAt: null, completedWeek: null },
+  { id: uid("q"), name: "Spanish INT-2", subjectId: "sub-exams", dueDate: "", isRoutine: true, scheduledDay: "Fri", completed: true, trackScore: true, totalItems: 404, correctItems: 307, score: null, description: "ROUTINE", link: "", completedAt: null, completedWeek: getISOWeek(new Date()) },
+  { id: uid("q"), name: "Lesson INT-2", subjectId: "sub-lessons", dueDate: "", isRoutine: true, scheduledDay: "Thu", completed: false, trackScore: false, totalItems: 502, correctItems: null, score: null, description: "ROUTINE", link: "", completedAt: null, completedWeek: null },
+  { id: uid("q"), name: "Spanish INT-1", subjectId: "sub-exams", dueDate: "", isRoutine: true, scheduledDay: "Sun", completed: true, trackScore: true, totalItems: 406, correctItems: 369, score: null, description: "ROUTINE", link: "", completedAt: null, completedWeek: getISOWeek(new Date()) },
+  { id: uid("q"), name: "Spanish IV-B", subjectId: "sub-exams", dueDate: "", isRoutine: true, scheduledDay: "Tue", completed: false, trackScore: true, totalItems: 381, correctItems: null, score: null, description: "ROUTINE", link: "", completedAt: null, completedWeek: null },
+  { id: uid("q"), name: "SER vs ESTAR", subjectId: "sub-estar", dueDate: "", isRoutine: true, scheduledDay: "Sat", completed: false, trackScore: false, totalItems: 245, correctItems: null, score: null, description: "ROUTINE", link: "", completedAt: null, completedWeek: null },
+];
+
+/* ---------- routine "next occurrence" date ----------
+   Routine quizzes are scheduled to a weekday (e.g. "Mon"), not a calendar
+   date, so they normally show no Due date. This computes the next upcoming
+   calendar date that weekday falls on (today counts as "next" if it matches),
+   purely for display — it's informational, not a real deadline, so it never
+   feeds into overdue logic. */
+const WEEKDAY_TO_JSIDX = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+function getNextRoutineDate(scheduledDay, fromISO) {
+  if (!scheduledDay || !(scheduledDay in WEEKDAY_TO_JSIDX)) return null;
+  const from = fromISO ? new Date(fromISO + "T00:00:00") : new Date();
+  const targetJsDay = WEEKDAY_TO_JSIDX[scheduledDay];
+  const diff = (targetJsDay - from.getDay() + 7) % 7;
+  const next = new Date(from);
+  next.setDate(from.getDate() + diff);
+  return next.toISOString().slice(0, 10);
+}
+function formatShortDate(iso) {
+  if (!iso) return "";
+  const [y, m, d] = iso.split("-").map(Number);
+  return `${MONTH_NAMES[m - 1].slice(0, 3)} ${d}`;
+}
+
+function dayCounts(quizzes) {
+  const counts = Object.fromEntries(WEEKDAYS.map((d) => [d, 0]));
+  quizzes.forEach((q) => { if (q.isRoutine && q.scheduledDay) counts[q.scheduledDay] = (counts[q.scheduledDay] || 0) + 1; });
+  return counts;
+}
+function leastBusyDay(quizzes) {
+  const counts = dayCounts(quizzes);
+  const min = Math.min(...WEEKDAYS.map((d) => counts[d]));
+  const candidates = WEEKDAYS.filter((d) => counts[d] === min);
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
+function shuffleArray(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
+function getRecommendation(quizzes, subjectMap, settings) {
+  const scored = quizzes.filter((q) => q.trackScore && q.completed && getScorePercent(q) !== null);
+  if (scored.length < 3) {
+    return { tier: "insufficient", label: "Gathering data", detail: `Log scores for ${3 - scored.length} more completed exam${3 - scored.length === 1 ? "" : "s"} to unlock a recommendation.`, avg: null, count: scored.length };
+  }
+  const avg = scored.reduce((a, b) => a + getScorePercent(b), 0) / scored.length;
+  const passRate = scored.filter((q) => { const g = getGrade(q, subjectMap[q.subjectId], settings); return g && g.pass; }).length / scored.length;
+  if (avg >= 85 && passRate >= 0.8) return { tier: "ready", label: "Ready to level up", detail: `Averaging ${avg.toFixed(1)}% across ${scored.length} exams, passing ${Math.round(passRate * 100)}% of them — you're ready for the next level.`, avg, count: scored.length };
+  if (avg >= 70) return { tier: "close", label: "Almost there", detail: `Averaging ${avg.toFixed(1)}% across ${scored.length} exams. A little more practice before testing up.`, avg, count: scored.length };
+  return { tier: "practice", label: "Keep practicing", detail: `Averaging ${avg.toFixed(1)}% across ${scored.length} exams. Focus on review before advancing a level.`, avg, count: scored.length };
+}
+
+/* ---------- performance / priority helpers ----------
+   Looks at each subject's graded history to find where the person is failing
+   most often, then scores every quiz so the weakest, least-mastered material
+   can be surfaced first (via the "Priority" sort and the Focus card). */
+function getSubjectStats(quizzes, settings, subjectMap) {
+  const stats = {};
+  Object.keys(subjectMap).forEach((id) => { stats[id] = { attempts: 0, passes: 0, totalScore: 0 }; });
+  quizzes.forEach((q) => {
+    if (!q.trackScore || !q.completed) return;
+    const percent = getScorePercent(q);
+    if (percent === null) return;
+    if (!stats[q.subjectId]) stats[q.subjectId] = { attempts: 0, passes: 0, totalScore: 0 };
+    const s = stats[q.subjectId];
+    s.attempts += 1;
+    s.totalScore += percent;
+    const grade = getGrade(q, subjectMap[q.subjectId], settings);
+    if (grade && grade.pass) s.passes += 1;
+  });
+  Object.keys(stats).forEach((id) => {
+    const s = stats[id];
+    s.avgScore = s.attempts ? s.totalScore / s.attempts : null;
+    s.passRate = s.attempts ? s.passes / s.attempts : null;
+    s.failRate = s.attempts ? 1 - s.passRate : 0;
+  });
+  return stats;
+}
+function getWeakestSubject(subjectStats, subjectMap, minAttempts = 2) {
+  let weakest = null;
+  Object.entries(subjectStats).forEach(([id, s]) => {
+    if (s.attempts < minAttempts) return;
+    if (!weakest || s.failRate > weakest.failRate || (s.failRate === weakest.failRate && s.avgScore < weakest.avgScore)) {
+      weakest = { id, ...s, subject: subjectMap[id] };
+    }
+  });
+  return weakest;
+}
+/* Higher score = more urgent to review. Combines: how often this whole subject
+   is failed, how low this specific quiz's own score was, and whether it's
+   currently failed or overdue. Ungraded/not-yet-attempted quizzes lean on the
+   subject's track record so weak subjects still bubble their open work up. */
+function getPriorityScore(q, subject, settings, subjectStats, todayISO) {
+  const stats = (subject && subjectStats[subject.id]) || { failRate: 0, avgScore: null, attempts: 0 };
+  const status = getQuizStatus(q, subject, settings, todayISO);
+  const ownPercent = getScorePercent(q);
+  const effectiveScore = ownPercent !== null ? ownPercent : (stats.avgScore !== null ? stats.avgScore : 100);
+  let score = stats.failRate * 60 + Math.max(0, 100 - effectiveScore) * 0.6;
+  if (status === "failed") score += 45;
+  if (status === "overdue") score += 25;
+  if (status === "incomplete" && stats.failRate > 0.3) score += 15;
+  if (status === "passed" || status === "completed") score -= 20;
+  return score;
+}
+
+/* ---------- table sorting ----------
+   Each sortable column has an ascending-order comparator plus a sensible
+   default direction — score/priority default to descending ("best/most
+   urgent first" reads more naturally than ascending), everything else
+   defaults ascending. Clicking a header that isn't the active sort column
+   switches to that column at its default direction; clicking the already-
+   active header flips direction. This same table backs both the column
+   headers (desktop) and the "Sort by" dropdown in the filters panel
+   (mobile, where headers are hidden), so the two controls always agree. */
+const SORT_FIELDS = {
+  priority: {
+    label: "Priority (weak areas)", defaultDir: "desc",
+    compare: (a, b, ctx) => getPriorityScore(a, ctx.subjectMap[a.subjectId], ctx.settings, ctx.subjectStats, ctx.todayISO) - getPriorityScore(b, ctx.subjectMap[b.subjectId], ctx.settings, ctx.subjectStats, ctx.todayISO),
+  },
+  name: { label: "Name", defaultDir: "asc", compare: (a, b) => a.name.localeCompare(b.name) },
+  subject: {
+    label: "Subject", defaultDir: "asc",
+    compare: (a, b, ctx) => (ctx.subjectMap[a.subjectId]?.name || "").localeCompare(ctx.subjectMap[b.subjectId]?.name || ""),
+  },
+  dueDate: { label: "Due date", defaultDir: "asc", compare: (a, b) => (a.dueDate || "").localeCompare(b.dueDate || "") },
+  routine: { label: "Routine", defaultDir: "desc", compare: (a, b) => (a.isRoutine ? 1 : 0) - (b.isRoutine ? 1 : 0) },
+  score: { label: "Score", defaultDir: "desc", compare: (a, b) => (getScorePercent(a) ?? -1) - (getScorePercent(b) ?? -1) },
+  status: {
+    label: "Status", defaultDir: "asc",
+    compare: (a, b, ctx) => {
+      const order = { overdue: 0, failed: 1, incomplete: 2, completed: 3, passed: 4 };
+      const sa = order[getQuizStatus(a, ctx.subjectMap[a.subjectId], ctx.settings, ctx.todayISO)] ?? 5;
+      const sb = order[getQuizStatus(b, ctx.subjectMap[b.subjectId], ctx.settings, ctx.todayISO)] ?? 5;
+      return sa - sb;
+    },
+  },
+};
+function sortQuizzes(list, sortBy, sortDir, ctx) {
+  const field = SORT_FIELDS[sortBy] || SORT_FIELDS.priority;
+  const dir = sortDir === "asc" ? 1 : -1;
+  return [...list].sort((a, b) => field.compare(a, b, ctx) * dir);
+}
+
+/* ---------- shared "completed work" timeline ----------
+   Used by both the History view and the Charts view. Merges three sources
+   into one chronological list of completed attempts:
+   - one-off quizzes that are currently marked complete
+   - routine quizzes completed *this* ISO week (not yet archived on rollover)
+   - everything already archived in historyLog
+   See performWeeklyRollover in App for why routine completions only reach
+   historyLog after the week changes — without also surfacing this week's
+   routine completions directly, they'd be invisible everywhere until the
+   week rolled over. */
+function getCombinedHistory(quizzes, historyLog) {
+  const oneOffDone = quizzes.filter((q) => !q.isRoutine && q.completed).map((q) => ({
+    id: `oneoff-${q.id}`, quizId: q.id, quizName: q.name, subjectId: q.subjectId, week: null,
+    date: q.completedAt, trackScore: q.trackScore, totalItems: q.totalItems, correctItems: q.correctItems,
+    score: q.score, link: q.link, isOneOff: true, isCurrent: false,
+  }));
+  const routineDoneThisWeek = quizzes.filter((q) => q.isRoutine && q.completed).map((q) => ({
+    id: `routine-current-${q.id}`, quizId: q.id, quizName: q.name, subjectId: q.subjectId, week: q.completedWeek,
+    date: q.completedAt, trackScore: q.trackScore, totalItems: q.totalItems, correctItems: q.correctItems,
+    score: q.score, link: q.link, isOneOff: false, isCurrent: true,
+  }));
+  return [...oneOffDone, ...routineDoneThisWeek, ...historyLog].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+}
+/* Percent for a history/timeline entry — mirrors getScorePercent(quiz) but
+   for the lighter-weight entry shape used in the combined timeline above. */
+function getEntryPercent(entry) {
+  if (!entry.trackScore) return null;
+  if (typeof entry.totalItems === "number" && entry.totalItems > 0 && typeof entry.correctItems === "number") {
+    return Math.round((entry.correctItems / entry.totalItems) * 1000) / 10;
+  }
+  if (typeof entry.score === "number") return entry.score;
+  return null;
+}
+/* Groups graded, dated timeline entries into ISO weeks and averages their
+   score — smooths noisy day-to-day attempts into a readable trend line for
+   the Charts view. Ungraded or undated entries are skipped (nothing to
+   plot). */
+function aggregateWeeklyScores(entries) {
+  const byWeek = new Map();
+  entries.forEach((e) => {
+    if (!e.date) return;
+    const percent = getEntryPercent(e);
+    if (percent === null) return;
+    const weekKey = e.week || getISOWeek(new Date(e.date + "T00:00:00"));
+    if (!byWeek.has(weekKey)) byWeek.set(weekKey, { weekKey, total: 0, count: 0 });
+    const bucket = byWeek.get(weekKey);
+    bucket.total += percent;
+    bucket.count += 1;
+  });
+  return Array.from(byWeek.values())
+    .map((b) => ({ weekKey: b.weekKey, avg: Math.round((b.total / b.count) * 10) / 10, count: b.count }))
+    .sort((a, b) => a.weekKey.localeCompare(b.weekKey));
+}
+
+/* ---------- month calendar helpers ---------- */
+function pad2(n) { return String(n).padStart(2, "0"); }
+function isoFromParts(y, m, d) { return `${y}-${pad2(m + 1)}-${pad2(d)}`; }
+function buildMonthMatrix(year, month) {
+  const startWeekday = (new Date(year, month, 1).getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const daysInPrevMonth = new Date(year, month, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < startWeekday; i++) {
+    const d = daysInPrevMonth - startWeekday + 1 + i;
+    const m = month - 1 < 0 ? 11 : month - 1;
+    const y = month - 1 < 0 ? year - 1 : year;
+    cells.push({ iso: isoFromParts(y, m, d), day: d, inMonth: false });
+  }
+  for (let d = 1; d <= daysInMonth; d++) cells.push({ iso: isoFromParts(year, month, d), day: d, inMonth: true });
+  while (cells.length % 7 !== 0) {
+    const idx = cells.length - (startWeekday + daysInMonth);
+    const d = idx + 1;
+    const m = month + 1 > 11 ? 0 : month + 1;
+    const y = month + 1 > 11 ? year + 1 : year;
+    cells.push({ iso: isoFromParts(y, m, d), day: d, inMonth: false });
+  }
+  const weeks = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+  return weeks;
+}
+
+/* ---------- storage ----------
+   v2 combines subjects + quizzes + settings into a single key (fewer round trips,
+   and everything that changes together saves together). If v2 isn't found we
+   fall back to the old v1 key so nobody loses their history on this update. */
+const STORAGE_KEY = "quiz-tracker-state-v2";
+const LEGACY_STORAGE_KEY = "quiz-tracker-state-v1";
+
+/* ============================================================================
+   GOOGLE DRIVE SYNC MODULE
+   ============================================================================
+   Optional: lets several people share one quiz library through a single JSON
+   file in Google Drive instead of everyone's data living only in their own
+   browser's localStorage.
+
+   SETUP — do this before flipping sync on:
+   1. console.cloud.google.com -> APIs & Services -> Library -> enable the
+      "Google Drive API" for your project.
+   2. APIs & Services -> Credentials -> Create Credentials -> OAuth client ID
+      -> Application type "Web application".
+   3. Under "Authorized JavaScript origins" add every exact origin this app
+      will be served from, e.g.:
+        http://localhost:8000
+        https://<your-username>.github.io
+      No redirect URI is needed — this uses the token-client popup flow, not
+      a redirect-based flow.
+   4. Paste the resulting Client ID into DRIVE_CLIENT_ID below.
+   5. Fill in ADMIN_EMAILS with the Google account email(s) allowed to edit
+      the shared data. Everyone else who connects gets read-only access in
+      this app.
+*/
+const DRIVE_CLIENT_ID = ""; // <-- paste your OAuth Client ID here, e.g. "123-abc.apps.googleusercontent.com"
+
+/* Scopes -------------------------------------------------------------------
+   This app is meant for MULTIPLE PEOPLE sharing one quiz library, so
+   "drive.file" alone isn't enough: drive.file only lets a signed-in account
+   see files THAT ACCOUNT created (or opened through a Google Picker). A
+   student who didn't create the file would see nothing with drive.file
+   alone.
+   Trade-off we're accepting: "drive.readonly" grants READ access to
+   *everything* already shared with the signed-in account, not just this
+   app's one file — broader than we'd like, but it's the only way for an
+   account that didn't create the file to find and read it by name.
+   To keep that broader read grant from becoming a broader WRITE grant, this
+   app enforces admin-vs-viewer itself (see ADMIN_EMAILS): only admins are
+   allowed to push changes, via drive.file, which is the scope that let the
+   admin create the file in the first place. Everyone else is treated as
+   read-only in this app's UI regardless of what Drive itself would
+   otherwise let them do. */
+const DRIVE_SCOPES = [
+  "https://www.googleapis.com/auth/drive.file",
+  "https://www.googleapis.com/auth/drive.readonly",
+  "https://www.googleapis.com/auth/userinfo.email",
+].join(" ");
+
+const DRIVE_FILE_NAME = "spanish-quiz-tracker-data.json";
+
+/* Optional but recommended once the shared file exists ----------------------
+   Leave this blank the very first time: the admin connects, the app creates
+   the file, and its ID gets logged to the console and shown in a toast.
+   Paste that ID in here afterward. Once set, every account (admin or
+   viewer) fetches this EXACT file by ID instead of searching Drive by name —
+   deterministic, and immune to duplicate-name mixups if a second file with
+   the same name ever turns up. Leaving it blank keeps the old
+   search-by-name fallback working, just less precise. */
+const DRIVE_SHARED_FILE_ID = "https://drive.google.com/file/d/1nBZvimHuAMcTgD688rL5YAydgOaraMEI/view?usp=drive_link"; // <-- paste the file ID here after the admin's first connect
+
+/* Fail-safe role gate --------------------------------------------------------
+   Empty array = role-checking OFF = everyone who connects is treated as
+   admin (full read/write) — a loud console warning + on-screen banner fires
+   in that case so it's never silently insecure-by-default. Fill this in
+   with the Google account email(s) that should be allowed to edit; every
+   other account that connects becomes read-only. Compared case-insensitively. */
+const ADMIN_EMAILS = [
+  'jhonaby24@gmail.com',
+];
+
+// Only a boolean "try to reconnect silently on next load" flag is ever
+// persisted — never the access token itself.
+const DRIVE_TOKEN_LS_KEY = "quiz-tracker-drive-reconnect";
+
+const DRIVE_API = "https://www.googleapis.com/drive/v3/files";
+const DRIVE_UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files";
+
+function driveIsConfigured() {
+  return typeof DRIVE_CLIENT_ID === "string" && DRIVE_CLIENT_ID.trim().length > 0;
+}
+
+function driveIsAdminEmail(email) {
+  if (!ADMIN_EMAILS.length) return true; // fail-safe: role-checking off, everyone is admin
+  if (!email) return false;
+  const lower = email.toLowerCase();
+  return ADMIN_EMAILS.some((e) => e.toLowerCase() === lower);
+}
+
+// Loads the Google Identity Services script if it hasn't finished loading yet
+// (it's tagged async/defer in <head>, so on a slow connection it may not be
+// ready the instant the user clicks "Connect").
+function driveWaitForGis(timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const check = () => {
+      if (window.google && window.google.accounts && window.google.accounts.oauth2) {
+        resolve();
+      } else if (Date.now() - start > timeoutMs) {
+        reject(new Error("Google sign-in script didn't load in time. Check your connection and try again."));
+      } else {
+        setTimeout(check, 100);
+      }
+    };
+    check();
+  });
+}
+
+// Wraps GIS's callback-based token client in a promise. `interactive: false`
+// attempts a silent (no popup) reauth for returning users; if that fails the
+// caller should retry with `interactive: true` to show the consent popup.
+function driveRequestToken(interactive) {
+  return new Promise((resolve, reject) => {
+    try {
+      const client = window.google.accounts.oauth2.initTokenClient({
+        client_id: DRIVE_CLIENT_ID,
+        scope: DRIVE_SCOPES,
+        prompt: interactive ? "consent" : "",
+        callback: (resp) => {
+          if (resp && resp.access_token) resolve(resp.access_token);
+          else reject(new Error(resp?.error_description || resp?.error || "Sign-in didn't return an access token."));
+        },
+        error_callback: (err) => reject(new Error(err?.message || "Google sign-in failed or was cancelled.")),
+      });
+      client.requestAccessToken({ prompt: interactive ? "consent" : "" });
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+function driveRevokeToken(token) {
+  return new Promise((resolve) => {
+    try {
+      if (token && window.google?.accounts?.oauth2?.revoke) {
+        window.google.accounts.oauth2.revoke(token, () => resolve());
+      } else {
+        resolve();
+      }
+    } catch (e) {
+      resolve();
+    }
+  });
+}
+
+async function driveApiFetchJson(url, token, options = {}) {
+  const res = await fetch(url, {
+    ...options,
+    headers: { Authorization: `Bearer ${token}`, ...(options.headers || {}) },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    const err = new Error(`Drive API error ${res.status}: ${body.slice(0, 300)}`);
+    err.status = res.status;
+    throw err;
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+async function driveFetchEmail(token) {
+  const data = await driveApiFetchJson("https://www.googleapis.com/oauth2/v3/userinfo", token);
+  return data?.email || null;
+}
+
+// Fetches one exact file by ID. Used when DRIVE_SHARED_FILE_ID is pinned —
+// deterministic, no ambiguity even if other files share the same name.
+async function driveGetFileById(token, fileId) {
+  try {
+    const data = await driveApiFetchJson(`${DRIVE_API}/${fileId}?fields=id,name,modifiedTime,trashed`, token);
+    if (!data || data.trashed) return null;
+    return data;
+  } catch (e) {
+    if (e.status === 404 || e.status === 403) return null; // not found, or not shared with this account
+    throw e;
+  }
+}
+
+// Finds the shared data file by exact name. Works for the admin (who created
+// it, visible via drive.file) and for viewers (visible via drive.readonly
+// once the admin has shared it with them in Drive).
+async function driveFindFile(token) {
+  const q = encodeURIComponent(`name = '${DRIVE_FILE_NAME.replace(/'/g, "\\'")}' and trashed = false`);
+  const data = await driveApiFetchJson(`${DRIVE_API}?q=${q}&fields=files(id,name,modifiedTime)&spaces=drive&pageSize=10`, token);
+  const files = data?.files || [];
+  if (!files.length) return null;
+  // If more than one turns up (e.g. duplicate uploads), prefer the most recently modified.
+  return files.sort((a, b) => new Date(b.modifiedTime) - new Date(a.modifiedTime))[0];
+}
+
+// Admin-only: creates the file the first time sync is turned on for this library.
+async function driveCreateFile(token, contentObj) {
+  const boundary = "quiztracker" + Math.random().toString(36).slice(2);
+  const metadata = { name: DRIVE_FILE_NAME, mimeType: "application/json" };
+  const body =
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+    `--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(contentObj)}\r\n--${boundary}--`;
+  return driveApiFetchJson(`${DRIVE_UPLOAD_API}?uploadType=multipart&fields=id,modifiedTime`, token, {
+    method: "POST",
+    headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
+    body,
+  });
+}
+
+async function driveGetModifiedTime(token, fileId) {
+  const data = await driveApiFetchJson(`${DRIVE_API}/${fileId}?fields=modifiedTime`, token);
+  return data?.modifiedTime || null;
+}
+
+async function driveDownloadFile(token, fileId) {
+  const res = await fetch(`${DRIVE_API}/${fileId}?alt=media`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`Drive download failed: ${res.status}`);
+  return res.json();
+}
+
+// Optimistic-concurrency write: the caller must pass the modifiedTime it last
+// knew about (`knownModifiedTime`). We re-check the file's *current*
+// modifiedTime immediately before writing; if it moved since our last known
+// value, someone else wrote in between — stop and surface a conflict instead
+// of silently overwriting their change.
+async function driveUpdateFile(token, fileId, contentObj, knownModifiedTime) {
+  const current = await driveGetModifiedTime(token, fileId);
+  if (knownModifiedTime && current && current !== knownModifiedTime) {
+    const err = new Error("Drive file changed since last sync.");
+    err.isConflict = true;
+    err.remoteModifiedTime = current;
+    throw err;
+  }
+  const data = await driveApiFetchJson(`${DRIVE_UPLOAD_API}/${fileId}?uploadType=media&fields=modifiedTime`, token, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(contentObj),
+  });
+  return data?.modifiedTime || null;
+}
+
+function App() {
+  const [loaded, setLoaded] = useState(false);
+  const [subjects, setSubjects] = useState(DEFAULT_SUBJECTS);
+  const [quizzes, setQuizzes] = useState([]);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [historyLog, setHistoryLog] = useState([]);
+  const [view, setView] = useState("table");
+  const [filterSubject, setFilterSubject] = useState("all");
+  const [filterStatus, setFilterStatus] = useState("all");
+  const [filterRoutine, setFilterRoutine] = useState("all");
+  const [sortBy, setSortBy] = useState("priority");
+  const [sortDir, setSortDir] = useState(SORT_FIELDS.priority.defaultDir);
+  const [showModal, setShowModal] = useState(false);
+  const [editingQuiz, setEditingQuiz] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [completedExpanded, setCompletedExpanded] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [toast, setToast] = useState(null);
+  const [saveStatus, setSaveStatus] = useState("idle"); // idle | saving | saved | error
+  const [lastSavedAt, setLastSavedAt] = useState(null);
+  const saveTimer = useRef(null);
+  const toastTimer = useRef(null);
+  const fileInputRef = useRef(null);
+
+  // ---- Google Drive sync state ----
+  const [driveStatus, setDriveStatus] = useState("disconnected"); // disconnected | connecting | connected | error
+  const [driveError, setDriveError] = useState(null);
+  const [driveEmail, setDriveEmail] = useState(null);
+  const [driveIsAdmin, setDriveIsAdmin] = useState(false);
+  const [driveFileId, setDriveFileId] = useState(null);
+  const [driveSyncStatus, setDriveSyncStatus] = useState("idle"); // idle | syncing | synced | conflict | error
+  const [driveConflict, setDriveConflict] = useState(null); // { remoteContent, remoteModifiedTime }
+  const [showDriveAdminWarning, setShowDriveAdminWarning] = useState(false);
+  const driveTokenRef = useRef(null);
+  const driveModifiedTimeRef = useRef(null);
+  const drivePushTimer = useRef(null);
+  const suppressNextPushRef = useRef(false);
+  const driveConnectingRef = useRef(false);
+  const isReadOnly = driveStatus === "connected" && !driveIsAdmin;
+
+  useEffect(() => {
+    (async () => {
+      try {
+        let res = await window.storage.get(STORAGE_KEY, false);
+        let migrated = false;
+        if (!res || !res.value) {
+          const legacy = await window.storage.get(LEGACY_STORAGE_KEY, false).catch(() => null);
+          if (legacy && legacy.value) { res = legacy; migrated = true; }
+        }
+        if (res && res.value) {
+          const parsed = JSON.parse(res.value);
+          const nextSubjects = Array.isArray(parsed.subjects) && parsed.subjects.length ? parsed.subjects.map(normalizeSubject) : DEFAULT_SUBJECTS;
+          const nextQuizzes = Array.isArray(parsed.quizzes) ? parsed.quizzes.map(normalizeQuiz) : [];
+          const nextSettings = normalizeSettings(parsed.settings);
+          const nextHistory = Array.isArray(parsed.historyLog) ? parsed.historyLog.map(normalizeHistoryEntry) : [];
+          setSubjects(nextSubjects);
+          setQuizzes(nextQuizzes);
+          setSettings(nextSettings);
+          setHistoryLog(nextHistory);
+          if (migrated) {
+            await window.storage.set(STORAGE_KEY, JSON.stringify({ subjects: nextSubjects, quizzes: nextQuizzes, settings: nextSettings, historyLog: nextHistory }), false);
+            showToastRef.current("Upgraded your saved data to the new storage format");
+          }
+        } else {
+          setQuizzes(seedQuizzes());
+        }
+      } catch (e) {
+        console.error("Load failed", e);
+        setQuizzes(seedQuizzes());
+      } finally {
+        setLoaded(true);
+      }
+    })();
+  }, []);
+
+  const showToastRef = useRef(() => {});
+  const showToast = (msg) => {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2600);
+  };
+  showToastRef.current = showToast;
+
+  useEffect(() => {
+    if (!loaded) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    setSaveStatus("saving");
+    saveTimer.current = setTimeout(async () => {
+      try {
+        await window.storage.set(STORAGE_KEY, JSON.stringify({ subjects, quizzes, settings, historyLog }), false);
+        setSaveStatus("saved");
+        setLastSavedAt(new Date());
+      } catch (e) {
+        console.error("Save failed", e);
+        setSaveStatus("error");
+        showToast("Couldn't save — your browser storage may be full or blocked");
+      }
+    }, 300);
+    return () => clearTimeout(saveTimer.current);
+  }, [subjects, quizzes, settings, historyLog, loaded]);
+
+  // Best-effort synchronous flush so an edit made right before closing the tab isn't lost
+  // to the 300ms debounce above.
+  useEffect(() => {
+    const flush = () => {
+      if (!loaded) return;
+      try { window.storage.set(STORAGE_KEY, JSON.stringify({ subjects, quizzes, settings, historyLog }), false); } catch (e) {}
+    };
+    window.addEventListener("beforeunload", flush);
+    return () => window.removeEventListener("beforeunload", flush);
+  }, [subjects, quizzes, settings, historyLog, loaded]);
+
+  /* ---------- Google Drive sync ----------
+     See the DRIVE_* constants and helper functions near the top of this
+     file for the API calls themselves; everything here is state wiring. */
+  const applyRemoteContent = (parsed) => {
+    // Prevents the push effect below from immediately re-uploading the data
+    // we just downloaded as if it were a new local edit.
+    suppressNextPushRef.current = true;
+    setSubjects(Array.isArray(parsed?.subjects) && parsed.subjects.length ? parsed.subjects.map(normalizeSubject) : DEFAULT_SUBJECTS);
+    setQuizzes(Array.isArray(parsed?.quizzes) ? parsed.quizzes.map(normalizeQuiz) : []);
+    setSettings(normalizeSettings(parsed?.settings));
+    setHistoryLog(Array.isArray(parsed?.historyLog) ? parsed.historyLog.map(normalizeHistoryEntry) : []);
+  };
+
+  const connectDrive = async (interactive = true) => {
+    if (!driveIsConfigured()) {
+      if (interactive) showToast("Google Drive isn't set up yet — add an OAuth Client ID in the code first.");
+      return;
+    }
+    if (driveConnectingRef.current) return;
+    driveConnectingRef.current = true;
+    setDriveStatus("connecting");
+    setDriveError(null);
+    try {
+      await driveWaitForGis();
+      let token;
+      try {
+        token = await driveRequestToken(interactive);
+      } catch (e) {
+        if (!interactive) { setDriveStatus("disconnected"); return; } // silent reconnect just didn't work; stay disconnected quietly
+        throw e;
+      }
+      driveTokenRef.current = token;
+      const email = await driveFetchEmail(token);
+      const admin = driveIsAdminEmail(email);
+      setDriveEmail(email);
+      setDriveIsAdmin(admin);
+      if (!ADMIN_EMAILS.length) {
+        setShowDriveAdminWarning(true);
+        console.warn("ADMIN_EMAILS is empty: Drive sync role-checking is OFF, so every connected account has full write access.");
+      }
+
+      let file = DRIVE_SHARED_FILE_ID ? await driveGetFileById(token, DRIVE_SHARED_FILE_ID) : await driveFindFile(token);
+      if (!file) {
+        if (!admin) throw new Error("No shared quiz file exists yet, and this account isn't an admin. Ask an admin to connect first.");
+        file = await driveCreateFile(token, { subjects, quizzes, settings, historyLog, syncedAt: new Date().toISOString() });
+        console.info(`Drive file created. Paste this into DRIVE_SHARED_FILE_ID for deterministic lookups: ${file.id}`);
+        showToast(`Created the shared Drive file — copy its ID into DRIVE_SHARED_FILE_ID (see console)`);
+      } else {
+        const remote = await driveDownloadFile(token, file.id);
+        applyRemoteContent(remote);
+      }
+      setDriveFileId(file.id);
+      driveModifiedTimeRef.current = file.modifiedTime;
+      setDriveStatus("connected");
+      setDriveSyncStatus("synced");
+      localStorage.setItem(DRIVE_TOKEN_LS_KEY, "true");
+      showToast(`Connected to Drive as ${email || "your Google account"}${admin ? "" : " (read-only)"}`);
+    } catch (e) {
+      console.error("Drive connect failed", e);
+      setDriveStatus("error");
+      setDriveError(e.message || "Couldn't connect to Google Drive");
+      showToast(e.message || "Couldn't connect to Google Drive");
+    } finally {
+      driveConnectingRef.current = false;
+    }
+  };
+
+  const disconnectDrive = async () => {
+    await driveRevokeToken(driveTokenRef.current);
+    driveTokenRef.current = null;
+    driveModifiedTimeRef.current = null;
+    setDriveStatus("disconnected");
+    setDriveEmail(null);
+    setDriveIsAdmin(false);
+    setDriveFileId(null);
+    setDriveSyncStatus("idle");
+    setDriveConflict(null);
+    setShowDriveAdminWarning(false);
+    localStorage.removeItem(DRIVE_TOKEN_LS_KEY);
+    showToast("Disconnected from Drive");
+  };
+
+  const refreshFromDrive = async () => {
+    if (driveStatus !== "connected" || !driveFileId || !driveTokenRef.current) return;
+    setDriveSyncStatus("syncing");
+    try {
+      const meta = await driveApiFetchJson(`${DRIVE_API}/${driveFileId}?fields=modifiedTime`, driveTokenRef.current);
+      const remote = await driveDownloadFile(driveTokenRef.current, driveFileId);
+      applyRemoteContent(remote);
+      driveModifiedTimeRef.current = meta?.modifiedTime || driveModifiedTimeRef.current;
+      setDriveSyncStatus("synced");
+      showToast("Refreshed from Drive");
+    } catch (e) {
+      console.error("Drive refresh failed", e);
+      setDriveSyncStatus("error");
+      showToast("Couldn't refresh from Drive");
+    }
+  };
+
+  const resolveConflictKeepMine = async () => {
+    if (!driveConflict) return;
+    try {
+      setDriveSyncStatus("syncing");
+      const newModifiedTime = await driveUpdateFile(
+        driveTokenRef.current, driveFileId,
+        { subjects, quizzes, settings, historyLog, syncedAt: new Date().toISOString() },
+        driveConflict.remoteModifiedTime
+      );
+      driveModifiedTimeRef.current = newModifiedTime;
+      setDriveSyncStatus("synced");
+      setDriveConflict(null);
+      showToast("Kept your version and overwrote the shared file");
+    } catch (e) {
+      showToast("Still conflicting — try \"Load their version\" instead");
+    }
+  };
+
+  const resolveConflictLoadTheirs = () => {
+    if (!driveConflict || !driveConflict.remoteContent) { showToast("Couldn't load the shared version"); return; }
+    applyRemoteContent(driveConflict.remoteContent);
+    driveModifiedTimeRef.current = driveConflict.remoteModifiedTime;
+    setDriveSyncStatus("synced");
+    setDriveConflict(null);
+    showToast("Loaded the shared file's latest version");
+  };
+
+  // Debounced push, admins only, with an optimistic-concurrency conflict guard
+  // (see driveUpdateFile). Viewers never write, so this effect no-ops for them.
+  useEffect(() => {
+    if (!loaded || driveStatus !== "connected" || !driveIsAdmin || !driveFileId) return;
+    if (suppressNextPushRef.current) { suppressNextPushRef.current = false; return; }
+    if (drivePushTimer.current) clearTimeout(drivePushTimer.current);
+    drivePushTimer.current = setTimeout(async () => {
+      setDriveSyncStatus("syncing");
+      try {
+        const newModifiedTime = await driveUpdateFile(
+          driveTokenRef.current, driveFileId,
+          { subjects, quizzes, settings, historyLog, syncedAt: new Date().toISOString() },
+          driveModifiedTimeRef.current
+        );
+        driveModifiedTimeRef.current = newModifiedTime;
+        setDriveSyncStatus("synced");
+      } catch (e) {
+        if (e.isConflict) {
+          setDriveSyncStatus("conflict");
+          try {
+            const remoteContent = await driveDownloadFile(driveTokenRef.current, driveFileId);
+            setDriveConflict({ remoteContent, remoteModifiedTime: e.remoteModifiedTime });
+          } catch (e2) {
+            setDriveConflict({ remoteContent: null, remoteModifiedTime: e.remoteModifiedTime });
+          }
+        } else {
+          console.error("Drive push failed", e);
+          setDriveSyncStatus("error");
+          showToast("Couldn't sync to Drive — will retry on your next change");
+        }
+      }
+    }, 2500);
+    return () => clearTimeout(drivePushTimer.current);
+  }, [subjects, quizzes, settings, historyLog, loaded, driveStatus, driveIsAdmin, driveFileId]);
+
+  // Attempt a silent (no popup) reconnect once local data has loaded, if the
+  // user previously connected. Never persists the token itself — only this
+  // boolean flag — so a stolen localStorage dump can't be replayed as Drive
+  // access; at worst it triggers one harmless silent-auth attempt.
+  useEffect(() => {
+    if (!loaded) return;
+    if (driveIsConfigured() && localStorage.getItem(DRIVE_TOKEN_LS_KEY) === "true") {
+      connectDrive(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded]);
+
+  /* ---------- weekly rollover for routine quizzes ----------
+     Once a routine quiz has been completed, it stays checked off until the ISO
+     week changes. At that point we archive the completed attempt into
+     historyLog (so it's never lost) and reset the quiz back to "not completed"
+     with a blank score, ready to be done again this week. Runs on load and
+     then re-checks hourly in case the tab is left open across the week
+     boundary. */
+  const performWeeklyRollover = () => {
+    const currentWeek = getISOWeek(new Date());
+    setQuizzes((qs) => {
+      const rolled = [];
+      const next = qs.map((q) => {
+        if (q.isRoutine && q.completed && q.completedWeek && q.completedWeek !== currentWeek) {
+          rolled.push({
+            id: uid("hist"), quizId: q.id, quizName: q.name, subjectId: q.subjectId,
+            week: q.completedWeek, date: q.completedAt, trackScore: q.trackScore,
+            totalItems: q.totalItems, correctItems: q.correctItems, score: q.score, link: q.link,
+          });
+          return { ...q, completed: false, completedAt: null, completedWeek: null, correctItems: null, score: null };
+        }
+        return q;
+      });
+      if (rolled.length) {
+        setHistoryLog((h) => [...rolled, ...h]);
+        showToastRef.current(`${rolled.length} routine quiz${rolled.length === 1 ? "" : "zes"} reset for the new week`);
+        return next;
+      }
+      return qs;
+    });
+  };
+  useEffect(() => {
+    if (!loaded) return;
+    performWeeklyRollover();
+    const interval = setInterval(performWeeklyRollover, 60 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [loaded]);
+
+  const subjectMap = useMemo(() => Object.fromEntries(subjects.map((s) => [s.id, s])), [subjects]);
+
+  // Central write gate: everyone connected to Drive as a non-admin is
+  // read-only in this app, no matter what Drive's own sharing permissions
+  // would otherwise allow. Every function below that mutates quiz/subject/
+  // settings data calls this first.
+  const guardReadOnly = () => {
+    if (isReadOnly) {
+      showToast("You're viewing shared data as a read-only guest — ask an admin for edit access.");
+      return true;
+    }
+    return false;
+  };
+
+  const saveQuiz = (data) => {
+    if (guardReadOnly()) return;
+    setQuizzes((qs) => {
+      let scheduledDay = data.isRoutine ? (data.scheduledDay || null) : null;
+      if (data.isRoutine && !scheduledDay) {
+        const pool = data.id ? qs.filter((q) => q.id !== data.id) : qs;
+        scheduledDay = leastBusyDay(pool);
+      }
+      if (data.id) {
+        return qs.map((q) => {
+          if (q.id !== data.id) return q;
+          let completionFields = {};
+          if (data.completed && !q.completed) {
+            completionFields = { completedAt: new Date().toISOString().slice(0, 10), completedWeek: getISOWeek(new Date()) };
+          } else if (!data.completed && q.completed) {
+            completionFields = { completedAt: null, completedWeek: null };
+          }
+          return { ...q, ...data, scheduledDay, ...completionFields };
+        });
+      }
+      const completionFields = data.completed ? { completedAt: new Date().toISOString().slice(0, 10), completedWeek: getISOWeek(new Date()) } : {};
+      return [...qs, { ...data, id: uid("q"), scheduledDay, ...completionFields }];
+    });
+    showToast(data.id ? "Quiz updated" : "Quiz added");
+    setShowModal(false);
+    setEditingQuiz(null);
+  };
+
+  const deleteQuiz = (id) => {
+    if (guardReadOnly()) return;
+    const target = quizzes.find((q) => q.id === id);
+    if (!window.confirm(`Delete "${target?.name || "this quiz"}"? This can't be undone.`)) return;
+    setQuizzes((qs) => qs.filter((q) => q.id !== id));
+    showToast("Quiz deleted");
+  };
+  const duplicateQuiz = (id) => {
+    if (guardReadOnly()) return;
+    const target = quizzes.find((q) => q.id === id);
+    if (!target) return;
+    const newName = getNextDuplicateName(target.name, quizzes.map((q) => q.name));
+    const copy = {
+      ...target,
+      id: uid("q"),
+      name: newName,
+      completed: false,
+      completedAt: null,
+      completedWeek: null,
+      correctItems: null,
+      score: null,
+    };
+    setQuizzes((qs) => [...qs, copy]);
+    showToast(`Quiz duplicated as "${newName}"`);
+  };
+  const toggleComplete = (id) => {
+    if (guardReadOnly()) return;
+    setQuizzes((qs) => qs.map((q) => {
+      if (q.id !== id) return q;
+      const turningOn = !q.completed;
+      if (turningOn) {
+        return { ...q, completed: true, completedAt: new Date().toISOString().slice(0, 10), completedWeek: getISOWeek(new Date()) };
+      }
+      return { ...q, completed: false, completedAt: null, completedWeek: null };
+    }));
+  };
+  const toggleRoutine = (id) => {
+    if (guardReadOnly()) return;
+    setQuizzes((qs) => {
+      const target = qs.find((q) => q.id === id);
+      if (!target) return qs;
+      const turningOn = !target.isRoutine;
+      const scheduledDay = turningOn ? leastBusyDay(qs) : null;
+      return qs.map((q) => (q.id === id ? { ...q, isRoutine: turningOn, scheduledDay } : q));
+    });
+  };
+  const updatePercentScore = (id, value) => {
+    if (guardReadOnly()) return;
+    let v = value === "" ? null : Math.max(0, Math.min(100, Number(value)));
+    setQuizzes((qs) => qs.map((q) => (q.id === id ? { ...q, score: v } : q)));
+  };
+  const updateCorrectItems = (id, value, totalItems) => {
+    if (guardReadOnly()) return;
+    if (value === "") { setQuizzes((qs) => qs.map((q) => (q.id === id ? { ...q, correctItems: null } : q))); return; }
+    const max = typeof totalItems === "number" ? totalItems : 999999;
+    const v = Math.max(0, Math.min(max, Number(value)));
+    setQuizzes((qs) => qs.map((q) => (q.id === id ? { ...q, correctItems: v } : q)));
+  };
+  const shuffleSchedule = () => {
+    if (guardReadOnly()) return;
+    setQuizzes((qs) => {
+      const routine = qs.filter((q) => q.isRoutine);
+      const rest = qs.filter((q) => !q.isRoutine);
+      const shuffled = shuffleArray(routine);
+      const reassigned = shuffled.map((q, i) => ({ ...q, scheduledDay: WEEKDAYS[i % 7] }));
+      return [...rest, ...reassigned];
+    });
+    showToast("Weekly schedule reshuffled");
+  };
+  const addSubject = (name, icon, color, soft) => {
+    if (guardReadOnly()) return;
+    setSubjects((s) => [...s, { id: uid("sub"), name, icon, color, soft, passThreshold: null }]);
+  };
+  const deleteSubject = (id) => {
+    if (guardReadOnly()) return;
+    if (quizzes.some((q) => q.subjectId === id)) { showToast("Reassign or remove quizzes using this subject first"); return; }
+    const target = subjects.find((s) => s.id === id);
+    if (!window.confirm(`Delete the subject "${target?.name || "this subject"}"?`)) return;
+    setSubjects((s) => s.filter((x) => x.id !== id));
+  };
+  const updateSubjectThreshold = (id, value) => {
+    if (guardReadOnly()) return;
+    const v = value === "" ? null : Math.max(0, Math.min(100, Number(value)));
+    setSubjects((s) => s.map((x) => (x.id === id ? { ...x, passThreshold: v } : x)));
+  };
+  const updateGlobalThreshold = (value) => {
+    if (guardReadOnly()) return;
+    const v = Math.max(0, Math.min(100, Number(value) || 0));
+    setSettings((s) => ({ ...s, passingThreshold: v }));
+  };
+  // Switching sort field (via the dropdown, or clicking a column header
+  // that isn't already active) resets direction to that field's default.
+  const handleSortByChange = (field) => {
+    setSortBy(field);
+    setSortDir(SORT_FIELDS[field]?.defaultDir || "asc");
+  };
+  // Clicking the already-active column header just flips direction.
+  const handleHeaderSort = (field) => {
+    if (sortBy === field) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else handleSortByChange(field);
+  };
+  const toggleSortDir = () => setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+
+  const toggleColumn = (key) => {
+    setSettings((s) => ({ ...s, visibleColumns: { ...s.visibleColumns, [key]: !s.visibleColumns[key] } }));
+  };
+
+  const handleExport = () => {
+    try {
+      const data = JSON.stringify({ subjects, quizzes, settings, historyLog, exportedAt: new Date().toISOString() }, null, 2);
+      const blob = new Blob([data], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `spanish-quiz-tracker-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showToast("Backup exported");
+    } catch (e) {
+      showToast("Export failed");
+    }
+  };
+
+  const handleImportClick = () => fileInputRef.current?.click();
+
+  const handleImportFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (guardReadOnly()) { e.target.value = ""; return; }
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      if (!parsed || !Array.isArray(parsed.subjects) || !Array.isArray(parsed.quizzes)) {
+        throw new Error("Unexpected file shape");
+      }
+      if (!window.confirm("Importing will replace all current quizzes and subjects. Continue?")) return;
+      setSubjects(parsed.subjects.length ? parsed.subjects.map(normalizeSubject) : DEFAULT_SUBJECTS);
+      setQuizzes(parsed.quizzes.map(normalizeQuiz));
+      setSettings(normalizeSettings(parsed.settings));
+      setHistoryLog(Array.isArray(parsed.historyLog) ? parsed.historyLog.map(normalizeHistoryEntry) : []);
+      showToast("Backup imported");
+    } catch (err) {
+      showToast("Import failed — that file isn't a valid backup");
+    } finally {
+      e.target.value = "";
+    }
+  };
+
+  const todayISO = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const subjectStats = useMemo(() => getSubjectStats(quizzes, settings, subjectMap), [quizzes, settings, subjectMap]);
+  const weakestSubject = useMemo(() => getWeakestSubject(subjectStats, subjectMap), [subjectStats, subjectMap]);
+
+  const filtered = useMemo(() => {
+    let list = [...quizzes];
+    if (filterSubject !== "all") list = list.filter((q) => q.subjectId === filterSubject);
+    if (filterStatus !== "all") list = list.filter((q) => getQuizStatus(q, subjectMap[q.subjectId], settings, todayISO) === filterStatus);
+    if (filterRoutine === "routine") list = list.filter((q) => q.isRoutine);
+    if (filterRoutine === "one-off") list = list.filter((q) => !q.isRoutine);
+    const term = searchTerm.trim().toLowerCase();
+    if (term) list = list.filter((q) => q.name.toLowerCase().includes(term) || (q.description || "").toLowerCase().includes(term));
+    return sortQuizzes(list, sortBy, sortDir, { subjectMap, settings, subjectStats, todayISO });
+  }, [quizzes, filterSubject, filterStatus, filterRoutine, sortBy, sortDir, subjectMap, searchTerm, settings, todayISO, subjectStats]);
+
+  const activeQuizzes = useMemo(() => filtered.filter((q) => !q.completed), [filtered]);
+  const completedQuizzes = useMemo(() => filtered.filter((q) => q.completed), [filtered]);
+
+  const stats = useMemo(() => {
+    const total = quizzes.length;
+    const completed = quizzes.filter((q) => q.completed).length;
+    const pct = total ? Math.round((completed / total) * 100) : 0;
+    const routineCount = quizzes.filter((q) => q.isRoutine).length;
+    return { total, completed, pct, routineCount };
+  }, [quizzes]);
+
+  const recommendation = useMemo(() => getRecommendation(quizzes, subjectMap, settings), [quizzes, subjectMap, settings]);
+  const counts = useMemo(() => dayCounts(quizzes), [quizzes]);
+
+  const activeFilterCount = [filterSubject !== "all", filterStatus !== "all", filterRoutine !== "all"].filter(Boolean).length;
+  const resetFilters = () => { setFilterSubject("all"); setFilterStatus("all"); setFilterRoutine("all"); setSortBy("priority"); setSortDir(SORT_FIELDS.priority.defaultDir); };
+  const anyMenuOpen = showFilters || showMoreMenu;
+  const closeMenus = () => { setShowFilters(false); setShowMoreMenu(false); };
+
+  if (!loaded) {
+    return <div className="qt-root qt-loading"><div className="qt-spinner" /></div>;
+  }
+
+  return (
+    <div className="qt-root">
+      <header className="qt-header">
+        <div className="qt-header-top">
+          <div className="qt-eyebrow-row">
+            <div className="qt-eyebrow">CUADERNO DE PROGRESO</div>
+            <div className="qt-status-group">
+              <SaveStatus status={saveStatus} lastSavedAt={lastSavedAt} />
+              <DriveStatusBadge status={driveStatus} syncStatus={driveSyncStatus} isAdmin={driveIsAdmin} />
+            </div>
+          </div>
+          <h1 className="qt-title">Spanish Quiz Tracker</h1>
+          <p className="qt-subtitle">Every lesson, exam, and routine drill in one notebook — scheduled, scored, and self-grading your readiness.</p>
+        </div>
+        {isReadOnly && (
+          <div className="qt-banner qt-banner-info" role="status">
+            <Icon name="cloud" size={14}/>
+            <span>You're viewing <strong>{driveEmail}</strong>'s shared quiz library as a read-only guest. Changes you make here won't be saved.</span>
+            <button type="button" className="qt-btn qt-btn-ghost qt-banner-action" onClick={refreshFromDrive}>Refresh</button>
+          </div>
+        )}
+        {showDriveAdminWarning && driveStatus === "connected" && (
+          <div className="qt-banner qt-banner-warning" role="alert">
+            <Icon name="alertCircle" size={14}/>
+            <span><strong>ADMIN_EMAILS is empty</strong> — role-checking is off, so every Google account that connects has full read/write access to this shared file. Set ADMIN_EMAILS in the code to restrict editing.</span>
+            <button type="button" className="qt-icon-btn" onClick={() => setShowDriveAdminWarning(false)} aria-label="Dismiss warning"><Icon name="x" size={13}/></button>
+          </div>
+        )}
+        <div className="qt-overview">
+          <div className="qt-overview-primary">
+            <div className="qt-mini-stats">
+              <div className="qt-mini-stat">
+                <div className="qt-mini-stat-icon"><Icon name="book" size={14}/></div>
+                <div><div className="qt-mini-stat-value">{stats.total}</div><div className="qt-mini-stat-label">Logged</div></div>
+              </div>
+              <div className="qt-mini-divider" />
+              <div className="qt-mini-stat">
+                <div className="qt-mini-stat-icon"><Icon name="check" size={14}/></div>
+                <div><div className="qt-mini-stat-value">{stats.completed}/{stats.total}</div><div className="qt-mini-stat-label">Completed</div></div>
+              </div>
+              <div className="qt-mini-divider" />
+              <div className="qt-mini-stat">
+                <div className="qt-mini-stat-icon"><Icon name="repeat" size={14}/></div>
+                <div><div className="qt-mini-stat-value">{stats.routineCount}</div><div className="qt-mini-stat-label">On routine</div></div>
+              </div>
+            </div>
+            <ProgressGauge pct={stats.pct} />
+          </div>
+          <div className="qt-overview-insights">
+            <FocusCard weakest={weakestSubject} />
+            <RecommendationStamp rec={recommendation} />
+          </div>
+        </div>
+      </header>
+
+      <div className="qt-toolbar">
+        {anyMenuOpen && <div className="qt-menu-backdrop" onClick={closeMenus} />}
+        <div className="qt-view-toggle">
+          <button className={`qt-toggle-btn ${view === "table" ? "active" : ""}`} onClick={() => setView("table")}><Icon name="table" size={15}/> Table</button>
+          <button className={`qt-toggle-btn ${view === "week" ? "active" : ""}`} onClick={() => setView("week")}><Icon name="calendar" size={15}/> This Week</button>
+          <button className={`qt-toggle-btn ${view === "month" ? "active" : ""}`} onClick={() => setView("month")}><Icon name="calendarDays" size={15}/> This Month</button>
+          <button className={`qt-toggle-btn ${view === "charts" ? "active" : ""}`} onClick={() => setView("charts")}><Icon name="barChart" size={15}/> Charts</button>
+          <button className={`qt-toggle-btn ${view === "history" ? "active" : ""}`} onClick={() => setView("history")}><Icon name="history" size={15}/> History</button>
+        </div>
+
+        <div className="qt-toolbar-actions">
+          <div className="qt-search-wrap">
+            <span className="qt-select-icon"><Icon name="search" size={13}/></span>
+            <input
+              className="qt-search-input"
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Search quizzes…"
+              aria-label="Search quizzes by name"
+            />
+            {searchTerm && (
+              <button className="qt-search-clear" onClick={() => setSearchTerm("")} aria-label="Clear search">
+                <Icon name="x" size={12}/>
+              </button>
+            )}
+          </div>
+
+          <div className="qt-filter-wrap">
+            <button
+              className={`qt-btn qt-btn-ghost ${activeFilterCount ? "has-active" : ""}`}
+              onClick={() => { setShowFilters((v) => !v); setShowMoreMenu(false); }}
+              aria-expanded={showFilters}
+            >
+              <Icon name="sliders" size={15}/> Filters
+              {activeFilterCount > 0 && <span className="qt-filter-count">{activeFilterCount}</span>}
+            </button>
+            {showFilters && (
+              <div className="qt-filters-panel" role="menu">
+                <div className="qt-filters-panel-head">
+                  <span>Filter &amp; sort</span>
+                  <button type="button" className="qt-icon-btn" onClick={() => setShowFilters(false)} aria-label="Close filters"><Icon name="x" size={13}/></button>
+                </div>
+                <label className="qt-panel-field"><span>Subject</span>
+                  <FilterSelect value={filterSubject} onChange={setFilterSubject} ariaLabel="Filter by subject"
+                    options={[{ value: "all", label: "All subjects" }, ...subjects.map((s) => ({ value: s.id, label: `${s.icon} ${s.name}` }))]} />
+                </label>
+                <label className="qt-panel-field"><span>Status</span>
+                  <FilterSelect value={filterStatus} onChange={setFilterStatus} ariaLabel="Filter by status"
+                    options={[
+                      { value: "all", label: "Any status" },
+                      { value: "incomplete", label: "Incomplete" },
+                      { value: "overdue", label: "Overdue" },
+                      { value: "passed", label: "Passed" },
+                      { value: "failed", label: "Failed" },
+                      { value: "completed", label: "Done (ungraded)" },
+                    ]} />
+                </label>
+                <label className="qt-panel-field"><span>Type</span>
+                  <FilterSelect value={filterRoutine} onChange={setFilterRoutine} ariaLabel="Filter by routine type"
+                    options={[{ value: "all", label: "Routine + one-off" }, { value: "routine", label: "Routine only" }, { value: "one-off", label: "One-off only" }]} />
+                </label>
+                <label className="qt-panel-field"><span>Sort by</span>
+                  <div className="qt-sort-field-row">
+                    <FilterSelect value={sortBy} onChange={handleSortByChange} ariaLabel="Sort quizzes"
+                      options={[{ value: "priority", label: "Priority (weak areas)" }, { value: "name", label: "Name" }, { value: "subject", label: "Subject" }, { value: "dueDate", label: "Due date" }, { value: "routine", label: "Routine" }, { value: "score", label: "Score" }, { value: "status", label: "Status" }]} />
+                    <button
+                      type="button"
+                      className="qt-icon-btn qt-sort-dir-btn"
+                      onClick={toggleSortDir}
+                      aria-label={sortDir === "asc" ? "Currently sorting ascending. Switch to descending." : "Currently sorting descending. Switch to ascending."}
+                      title={sortDir === "asc" ? "Ascending" : "Descending"}
+                    >
+                      <Icon name={sortDir === "asc" ? "arrowUp" : "arrowDown"} size={14}/>
+                    </button>
+                  </div>
+                </label>
+                {activeFilterCount > 0 && (
+                  <button type="button" className="qt-btn qt-btn-ghost qt-filters-reset" onClick={resetFilters}><Icon name="x" size={13}/> Reset filters</button>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="qt-more-wrap">
+            <button className="qt-icon-btn qt-more-btn" onClick={() => { setShowMoreMenu((v) => !v); setShowFilters(false); }} aria-label="More actions" aria-expanded={showMoreMenu}>
+              <Icon name="more" size={17}/>
+            </button>
+            {showMoreMenu && (
+              <div className="qt-more-menu" role="menu">
+                {view === "table" && (
+                  <>
+                    <div className="qt-more-menu-label">Show columns</div>
+                    {[
+                      { key: "subject", label: "Subject" },
+                      { key: "dueDate", label: "Due date" },
+                      { key: "routine", label: "Routine" },
+                      { key: "score", label: "Score / Grade" },
+                      { key: "status", label: "Status" },
+                    ].map((o) => (
+                      <label key={o.key} className="qt-checkline qt-more-menu-check">
+                        <input type="checkbox" checked={!!settings.visibleColumns[o.key]} onChange={() => toggleColumn(o.key)} /> <span>{o.label}</span>
+                      </label>
+                    ))}
+                    <div className="qt-more-menu-divider" />
+                  </>
+                )}
+                {view === "week" && (
+                  <button type="button" className="qt-more-menu-item" onClick={() => { shuffleSchedule(); setShowMoreMenu(false); }}>
+                    <Icon name="shuffle" size={15}/> Reshuffle schedule
+                  </button>
+                )}
+                <button type="button" className="qt-more-menu-item" onClick={() => { setShowSettings(true); setShowMoreMenu(false); }}>
+                  <Icon name="settings" size={15}/> Settings
+                </button>
+                <div className="qt-more-menu-divider" />
+                <button type="button" className="qt-more-menu-item" onClick={() => { handleExport(); setShowMoreMenu(false); }} title="Download a backup of all your data">
+                  <Icon name="download" size={15}/> Export backup
+                </button>
+                <button type="button" className="qt-more-menu-item" disabled={isReadOnly} onClick={() => { handleImportClick(); setShowMoreMenu(false); }} title={isReadOnly ? "Read-only guests can't import" : "Restore data from a backup file"}>
+                  <Icon name="upload" size={15}/> Import backup
+                </button>
+                <div className="qt-more-menu-divider" />
+                {driveStatus === "connected" ? (
+                  <>
+                    <div className="qt-more-menu-label">
+                      Drive: {driveEmail} {driveIsAdmin ? "(admin)" : "(read-only)"}
+                    </div>
+                    <button type="button" className="qt-more-menu-item" onClick={() => { refreshFromDrive(); setShowMoreMenu(false); }}>
+                      <Icon name="cloud" size={15}/> Refresh from Drive
+                    </button>
+                    <button type="button" className="qt-more-menu-item" onClick={() => { disconnectDrive(); setShowMoreMenu(false); }}>
+                      <Icon name="x" size={15}/> Disconnect Drive
+                    </button>
+                  </>
+                ) : (
+                  <button type="button" className="qt-more-menu-item" onClick={() => { connectDrive(true); setShowMoreMenu(false); }} disabled={driveStatus === "connecting"}>
+                    <Icon name="cloud" size={15}/> {driveStatus === "connecting" ? "Connecting…" : "Connect Google Drive"}
+                  </button>
+                )}
+              </div>
+            )}
+            <input ref={fileInputRef} type="file" accept="application/json" style={{ display: "none" }} onChange={handleImportFile} />
+          </div>
+
+          <button className="qt-btn qt-btn-primary qt-new-quiz-btn" disabled={isReadOnly} title={isReadOnly ? "Read-only guests can't add quizzes" : undefined} onClick={() => { if (guardReadOnly()) return; setEditingQuiz(null); setShowModal(true); }}><Icon name="plus" size={15}/> New quiz</button>
+        </div>
+      </div>
+
+      <button className="qt-fab" disabled={isReadOnly} onClick={() => { if (guardReadOnly()) return; setEditingQuiz(null); setShowModal(true); }} aria-label="Add new quiz">
+        <Icon name="plus" size={22}/>
+      </button>
+
+      {view === "table" && (
+        <>
+          <QuizTable quizzes={activeQuizzes} subjectMap={subjectMap} settings={settings} todayISO={todayISO} visibleColumns={settings.visibleColumns} subjectStats={subjectStats}
+            sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort}
+            onToggleComplete={toggleComplete} onToggleRoutine={toggleRoutine}
+            onUpdatePercentScore={updatePercentScore} onUpdateCorrectItems={updateCorrectItems}
+            onEdit={(q) => { setEditingQuiz(q); setShowModal(true); }} onDelete={deleteQuiz} onDuplicate={duplicateQuiz}
+            emptyMessage={filtered.length === 0 ? "No quizzes match these filters yet. Add one, or widen your filters." : "Nothing left to do here — nice work!"} />
+
+          {completedQuizzes.length > 0 && (
+            <div className="qt-completed-section">
+              <button type="button" className="qt-completed-toggle" onClick={() => setCompletedExpanded((v) => !v)} aria-expanded={completedExpanded}>
+                <Icon name="chevronDown" size={14} style={{ transform: completedExpanded ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform .15s ease" }} />
+                <span>Completed</span>
+                <span className="qt-completed-count">{completedQuizzes.length}</span>
+                <span className="qt-completed-hint">{completedExpanded ? "Hide" : "Show"}</span>
+              </button>
+              {completedExpanded && (
+                <QuizTable quizzes={completedQuizzes} subjectMap={subjectMap} settings={settings} todayISO={todayISO} visibleColumns={settings.visibleColumns} subjectStats={subjectStats}
+                  sortBy={sortBy} sortDir={sortDir} onSort={handleHeaderSort}
+                  onToggleComplete={toggleComplete} onToggleRoutine={toggleRoutine}
+                  onUpdatePercentScore={updatePercentScore} onUpdateCorrectItems={updateCorrectItems}
+                  onEdit={(q) => { setEditingQuiz(q); setShowModal(true); }} onDelete={deleteQuiz} onDuplicate={duplicateQuiz} />
+              )}
+            </div>
+          )}
+        </>
+      )}
+      {view === "week" && (
+        <WeekView quizzes={quizzes} subjectMap={subjectMap} counts={counts} onToggleComplete={toggleComplete} />
+      )}
+      {view === "month" && (
+        <MonthView quizzes={quizzes} subjectMap={subjectMap} settings={settings} todayISO={todayISO}
+          onToggleComplete={toggleComplete} onEdit={(q) => { setEditingQuiz(q); setShowModal(true); }} />
+      )}
+      {view === "charts" && (
+        <ChartsView quizzes={quizzes} historyLog={historyLog} subjects={subjects} subjectMap={subjectMap} settings={settings} subjectStats={subjectStats} />
+      )}
+      {view === "history" && (
+        <HistoryView historyLog={historyLog} quizzes={quizzes} subjectMap={subjectMap} settings={settings} />
+      )}
+
+      {showModal && (
+        <QuizModal subjects={subjects} settings={settings} initial={editingQuiz}
+          onClose={() => { setShowModal(false); setEditingQuiz(null); }} onSave={saveQuiz} />
+      )}
+      {showSettings && (
+        <SettingsModal subjects={subjects} settings={settings}
+          onAddSubject={addSubject} onDeleteSubject={deleteSubject} onSubjectThreshold={updateSubjectThreshold}
+          onGlobalThreshold={updateGlobalThreshold} onClose={() => setShowSettings(false)} />
+      )}
+      {driveConflict && (
+        <DriveConflictModal
+          hasRemote={!!driveConflict.remoteContent}
+          onKeepMine={resolveConflictKeepMine}
+          onLoadTheirs={resolveConflictLoadTheirs}
+        />
+      )}
+      {toast && <div className="qt-toast">{toast}</div>}
+    </div>
+  );
+}
+
+function DriveStatusBadge({ status, syncStatus, isAdmin }) {
+  if (status !== "connected") return null;
+  let label = "Drive synced";
+  let icon = "cloud";
+  let cls = "qt-drive-synced";
+  if (syncStatus === "syncing") { label = "Syncing…"; cls = "qt-drive-syncing"; }
+  else if (syncStatus === "conflict") { label = "Sync conflict"; cls = "qt-drive-conflict"; icon = "alertCircle"; }
+  else if (syncStatus === "error") { label = "Sync error"; cls = "qt-drive-error"; icon = "alertCircle"; }
+  else if (!isAdmin) { label = "Drive (read-only)"; }
+  return (
+    <span className={`qt-save-status ${cls}`}>
+      <Icon name={icon} size={11}/> {label}
+    </span>
+  );
+}
+
+function DriveConflictModal({ hasRemote, onKeepMine, onLoadTheirs }) {
+  return (
+    <div className="qt-modal-overlay">
+      <div className="qt-modal" role="alertdialog" aria-modal="true" aria-label="Drive sync conflict">
+        <div className="qt-modal-head"><h2>Sync conflict</h2></div>
+        <div className="qt-settings-section">
+          <p className="qt-settings-helper">
+            Someone else saved changes to the shared Drive file since your last sync. Choose how to resolve it —
+            we won't overwrite either version automatically.
+          </p>
+          <div className="qt-conflict-actions">
+            <button type="button" className="qt-btn qt-btn-primary" onClick={onKeepMine}>Keep my version (overwrite shared file)</button>
+            <button type="button" className="qt-btn qt-btn-ghost" onClick={onLoadTheirs} disabled={!hasRemote}>Load their version (discard my local changes)</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SaveStatus({ status, lastSavedAt }) {
+  const timeStr = lastSavedAt ? lastSavedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  let label = "";
+  if (status === "saving") label = "Saving…";
+  else if (status === "saved") label = `Saved ${timeStr}`;
+  else if (status === "error") label = "Save failed";
+  else return null;
+  return (
+    <span className={`qt-save-status qt-save-${status}`}>
+      <Icon name="cloud" size={12}/> {label}
+    </span>
+  );
+}
+
+function ProgressGauge({ pct }) {
+  const r = 26, c = 2 * Math.PI * r, offset = c - (pct / 100) * c;
+  return (
+    <div className="qt-gauge-card">
+      <svg width="64" height="64" viewBox="0 0 64 64">
+        <circle cx="32" cy="32" r={r} fill="none" stroke="var(--line)" strokeWidth="6" />
+        <circle cx="32" cy="32" r={r} fill="none" stroke="var(--teal)" strokeWidth="6" strokeDasharray={c} strokeDashoffset={offset} strokeLinecap="round" transform="rotate(-90 32 32)" style={{ transition: "stroke-dashoffset .5s ease" }} />
+        <text x="32" y="37" textAnchor="middle" fontSize="15" fontFamily="IBM Plex Mono, monospace" fontWeight="600" fill="var(--ink)">{pct}%</text>
+      </svg>
+      <div className="qt-gauge-label">Overall<br />progress</div>
+    </div>
+  );
+}
+
+function RecommendationStamp({ rec }) {
+  const tierMeta = {
+    insufficient: { text: "IN PROGRESS", color: "var(--ink-soft)" },
+    practice: { text: "KEEP PRACTICING", color: "var(--rose)" },
+    close: { text: "ALMOST READY", color: "var(--gold)" },
+    ready: { text: "LEVEL UP READY", color: "var(--teal)" },
+  }[rec.tier];
+  return (
+    <div className="qt-rec-card">
+      <div className="qt-stamp" style={{ borderColor: tierMeta.color, color: tierMeta.color }}>{tierMeta.text}</div>
+      <p className="qt-rec-detail">{rec.detail}</p>
+    </div>
+  );
+}
+
+function FocusCard({ weakest }) {
+  if (!weakest) {
+    return (
+      <div className="qt-focus-card qt-focus-empty">
+        <div className="qt-focus-icon"><Icon name="flame" size={15}/></div>
+        <div>
+          <div className="qt-focus-title">Focus area</div>
+          <div className="qt-focus-detail">Grade a few more quizzes per subject to see where to focus.</div>
+        </div>
+      </div>
+    );
+  }
+  const pct = Math.round(weakest.passRate * 100);
+  return (
+    <div className="qt-focus-card">
+      <div className="qt-focus-icon" style={{ color: weakest.subject?.color, background: weakest.subject?.soft }}><Icon name="flame" size={15}/></div>
+      <div>
+        <div className="qt-focus-title">Focus area: {weakest.subject?.icon} {weakest.subject?.name || "Unassigned"}</div>
+        <div className="qt-focus-detail">Passing {pct}% of {weakest.attempts} graded {weakest.attempts === 1 ? "attempt" : "attempts"} — the quizzes you fail most often are pinned to the top of the table.</div>
+      </div>
+    </div>
+  );
+}
+
+function FilterSelect({ iconName, value, onChange, options, ariaLabel }) {
+  return (
+    <div className="qt-select-wrap">
+      {iconName && <span className="qt-select-icon"><Icon name={iconName} size={13}/></span>}
+      <select className="qt-select" style={iconName ? { paddingLeft: 26 } : {}} value={value} onChange={(e) => onChange(e.target.value)} aria-label={ariaLabel}>
+        {options.map((o) => (<option key={o.value} value={o.value}>{o.label}</option>))}
+      </select>
+      <Icon name="chevronDown" size={13} className="qt-select-chevron" />
+    </div>
+  );
+}
+
+function GradeBadge({ grade }) {
+  if (!grade) return null;
+  return (
+    <span className={`qt-grade-badge ${grade.pass ? "is-pass" : "is-fail"}`}>
+      {grade.percent}% {grade.pass ? "· Pass" : "· Fail"}
+    </span>
+  );
+}
+
+function StatusPill({ status }) {
+  const meta = STATUS_META[status];
+  return <span className="qt-status-pill" style={{ color: meta.color, background: meta.soft }}>{meta.label}</span>;
+}
+
+function ScoreCell({ quiz, subject, settings, onUpdateCorrectItems, onUpdatePercentScore }) {
+  if (!quiz.trackScore) return <span className="qt-mono qt-muted">—</span>;
+  const usingItems = typeof quiz.totalItems === "number";
+  const grade = getGrade(quiz, subject, settings);
+  const accent = subject?.color || "var(--teal)";
+
+  const stepItems = (delta) => {
+    const current = typeof quiz.correctItems === "number" ? quiz.correctItems : 0;
+    const next = Math.max(0, Math.min(quiz.totalItems, current + delta));
+    onUpdateCorrectItems(quiz.id, String(next), quiz.totalItems);
+  };
+  const stepPercent = (delta) => {
+    const current = typeof quiz.score === "number" ? quiz.score : 0;
+    const next = Math.max(0, Math.min(100, current + delta));
+    onUpdatePercentScore(quiz.id, String(next));
+  };
+
+  return (
+    <div className="qt-score-cell">
+      {usingItems ? (
+        <span className="qt-score-fraction">
+          <span className="qt-score-stepper" style={{ "--accent": accent }}>
+            <button type="button" className="qt-score-step-btn" onClick={() => stepItems(-1)} aria-label="Decrease correct answers by 1"><Icon name="minus" size={11}/></button>
+            <input type="number" min="0" max={quiz.totalItems} placeholder="—" className="qt-score-input qt-score-input-sm"
+              value={quiz.correctItems ?? ""} onChange={(e) => onUpdateCorrectItems(quiz.id, e.target.value, quiz.totalItems)}
+              aria-label={`Correct answers for ${quiz.name}, out of ${quiz.totalItems}`} />
+            <button type="button" className="qt-score-step-btn" onClick={() => stepItems(1)} aria-label="Increase correct answers by 1"><Icon name="plus" size={11}/></button>
+          </span>
+          <span className="qt-score-of">/ {quiz.totalItems}</span>
+        </span>
+      ) : (
+        <span className="qt-score-stepper" style={{ "--accent": accent }}>
+          <button type="button" className="qt-score-step-btn" onClick={() => stepPercent(-1)} aria-label="Decrease score by 1"><Icon name="minus" size={11}/></button>
+          <input type="number" min="0" max="100" placeholder="—" className="qt-score-input"
+            value={quiz.score ?? ""} onChange={(e) => onUpdatePercentScore(quiz.id, e.target.value)}
+            aria-label={`Score for ${quiz.name}`} />
+          <button type="button" className="qt-score-step-btn" onClick={() => stepPercent(1)} aria-label="Increase score by 1"><Icon name="plus" size={11}/></button>
+        </span>
+      )}
+      <GradeBadge grade={grade} />
+    </div>
+  );
+}
+
+/* Clickable, keyboard-accessible column header. Uses a native <button> inside
+   the <th> (rather than an onClick on the <th> itself) so it's reachable by
+   Tab and activatable with Enter/Space without extra role/tabIndex plumbing,
+   and exposes standard aria-sort so assistive tech announces sort state. */
+function SortableHeader({ field, label, sortBy, sortDir, onSort, style }) {
+  const isActive = sortBy === field;
+  const ariaSort = isActive ? (sortDir === "asc" ? "ascending" : "descending") : "none";
+  return (
+    <th style={style} aria-sort={ariaSort}>
+      <button type="button" className={`qt-th-sort-btn ${isActive ? "active" : ""}`} onClick={() => onSort && onSort(field)}>
+        <span>{label}</span>
+        <span className="qt-th-sort-icon" aria-hidden="true">
+          {isActive ? <Icon name={sortDir === "asc" ? "arrowUp" : "arrowDown"} size={11}/> : <Icon name="arrowUpDown" size={11}/>}
+        </span>
+      </button>
+    </th>
+  );
+}
+
+function QuizTable({ quizzes, subjectMap, settings, todayISO, visibleColumns, subjectStats, sortBy, sortDir, onSort, onToggleComplete, onToggleRoutine, onUpdatePercentScore, onUpdateCorrectItems, onEdit, onDelete, onDuplicate, emptyMessage }) {
+  if (quizzes.length === 0) return <div className="qt-empty">{emptyMessage || "No quizzes match these filters yet. Add one, or widen your filters."}</div>;
+  return (
+    <div className="qt-table-wrap">
+      <table className="qt-table">
+        <thead><tr>
+          <th style={{ width: 34 }}></th>
+          <SortableHeader field="name" label="Test or Deadline" sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
+          {visibleColumns.subject && <SortableHeader field="subject" label="Subject" sortBy={sortBy} sortDir={sortDir} onSort={onSort} />}
+          {visibleColumns.dueDate && <SortableHeader field="dueDate" label="Due date" sortBy={sortBy} sortDir={sortDir} onSort={onSort} />}
+          {visibleColumns.routine && <SortableHeader field="routine" label="Routine" sortBy={sortBy} sortDir={sortDir} onSort={onSort} />}
+          {visibleColumns.score && <SortableHeader field="score" label="Score / Grade" sortBy={sortBy} sortDir={sortDir} onSort={onSort} />}
+          {visibleColumns.status && <SortableHeader field="status" label="Status" sortBy={sortBy} sortDir={sortDir} onSort={onSort} />}
+          <th style={{ width: 96 }}></th>
+        </tr></thead>
+        <tbody>
+          {quizzes.map((q) => {
+            const subj = subjectMap[q.subjectId] || { name: "Unassigned", icon: "•", color: "#999", soft: "#eee" };
+            const status = getQuizStatus(q, subj, settings, todayISO);
+            const isOverdue = status === "overdue";
+            const sStats = (subjectStats && subjectStats[q.subjectId]) || null;
+            const isPriority = sStats && sStats.attempts >= 2 && sStats.failRate > 0.3 && status !== "passed" && status !== "completed";
+            return (
+              <tr key={q.id} className={`${q.completed ? "is-complete" : ""} ${isOverdue ? "is-overdue" : ""}`}>
+                <td data-label="">
+                  <button
+                    className={`qt-checkbox ${q.completed ? "checked" : ""}`}
+                    onClick={() => onToggleComplete(q.id)}
+                    aria-pressed={q.completed}
+                    aria-label={q.completed ? `Mark "${q.name}" as incomplete` : `Mark "${q.name}" as complete`}
+                  >{q.completed && <Icon name="check" size={12} strokeWidth={3}/>}</button>
+                </td>
+                <td>
+                  <div className="qt-name-cell">
+                    <span className="qt-name" onClick={() => onEdit(q)}>
+                      {isPriority && <span className="qt-priority-flag" title={`Frequently missed in ${subj.name} — review this first`}><Icon name="flame" size={11}/></span>}
+                      {q.name}
+                      {q.link && (
+                        <a href={q.link} target="_blank" rel="noreferrer" className="qt-link-icon" onClick={(e) => e.stopPropagation()} aria-label={`Open quiz link for ${q.name}`} title="Open quiz link">
+                          <Icon name="link" size={11}/>
+                        </a>
+                      )}
+                    </span>
+                    {q.description && <span className="qt-desc-tag" onClick={() => onEdit(q)}>{q.description}</span>}
+                  </div>
+                </td>
+                {visibleColumns.subject && <td data-label="Subject"><span className="qt-subject-pill" style={{ background: subj.soft, color: subj.color, borderColor: subj.color }}>{subj.icon} {subj.name}</span></td>}
+                {visibleColumns.dueDate && (
+                  <td data-label="Due date" className="qt-mono">
+                    {q.dueDate ? (
+                      <span className={isOverdue ? "qt-overdue-text" : ""}>
+                        {q.dueDate}{isOverdue && <span className="qt-overdue-tag"><Icon name="alertCircle" size={11}/> overdue</span>}
+                      </span>
+                    ) : (q.isRoutine && q.scheduledDay) ? (
+                      <span className="qt-routine-next-date" title={`Computed from its ${q.scheduledDay} weekly schedule, not a fixed deadline`}>
+                        {formatShortDate(getNextRoutineDate(q.scheduledDay, todayISO))}
+                        <span className="qt-routine-next-tag">next</span>
+                      </span>
+                    ) : "—"}
+                  </td>
+                )}
+                {visibleColumns.routine && (
+                  <td data-label="Routine">
+                    <button
+                      className={`qt-routine-pill ${q.isRoutine ? "active" : ""}`}
+                      onClick={() => onToggleRoutine(q.id)}
+                      aria-pressed={q.isRoutine}
+                      aria-label={q.isRoutine ? `Remove "${q.name}" from routine schedule` : `Add "${q.name}" to routine schedule`}
+                    ><Icon name="repeat" size={11}/> {q.isRoutine ? q.scheduledDay || "Routine" : "One-off"}</button>
+                  </td>
+                )}
+                {visibleColumns.score && (
+                  <td data-label="Score">
+                    <ScoreCell quiz={q} subject={subj} settings={settings} onUpdateCorrectItems={onUpdateCorrectItems} onUpdatePercentScore={onUpdatePercentScore} />
+                  </td>
+                )}
+                {visibleColumns.status && <td data-label="Status"><StatusPill status={status} /></td>}
+                <td><div className="qt-row-actions">
+                  <button className="qt-icon-btn" onClick={() => onEdit(q)} aria-label={`Edit "${q.name}"`}><Icon name="edit" size={13}/></button>
+                  <button className="qt-icon-btn" onClick={() => onDuplicate(q.id)} aria-label={`Duplicate "${q.name}"`} title="Duplicate"><Icon name="copy" size={13}/></button>
+                  <button className="qt-icon-btn danger" onClick={() => onDelete(q.id)} aria-label={`Delete "${q.name}"`}><Icon name="trash" size={13}/></button>
+                </div></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function HistoryScoreCell({ entry, subject, settings }) {
+  const percent = getEntryPercent(entry);
+  if (percent === null) return <span className="qt-mono qt-muted">—</span>;
+  const threshold = getThreshold(subject, settings);
+  return <span className={percent >= threshold ? "qt-preview-pass" : "qt-preview-fail"}>{percent}% {percent >= threshold ? "· Pass" : "· Fail"}</span>;
+}
+
+/* Archive of completed work. Routine quizzes reset every ISO week (see
+   performWeeklyRollover in App), so their past completions live here instead
+   of disappearing. One-off quizzes never reset, so their current completed
+   state is shown here too — a permanent, chronological completion log
+   separate from the working table. */
+function HistoryView({ historyLog, quizzes, subjectMap, settings }) {
+  // See getCombinedHistory's own doc comment for why current-week routine
+  // completions have to be merged in here rather than read from historyLog
+  // alone.
+  const combined = useMemo(() => getCombinedHistory(quizzes, historyLog), [quizzes, historyLog]);
+
+  if (combined.length === 0) {
+    return <div className="qt-empty">Nothing completed yet. Check off a quiz and it'll show up here — routine quizzes stay listed as "this week" until the week rolls over, then archive permanently.</div>;
+  }
+
+  return (
+    <div className="qt-table-wrap">
+      <table className="qt-table">
+        <thead><tr>
+          <th>Quiz</th><th>Subject</th><th>Type</th><th>Week</th><th>Completed on</th><th>Score</th><th style={{ width: 40 }}></th>
+        </tr></thead>
+        <tbody>
+          {combined.map((h) => {
+            const subj = subjectMap[h.subjectId] || { name: "Unassigned", icon: "•", color: "#999", soft: "#eee" };
+            return (
+              <tr key={h.id}>
+                <td data-label="Quiz"><span className="qt-name">{h.quizName}</span></td>
+                <td data-label="Subject"><span className="qt-subject-pill" style={{ background: subj.soft, color: subj.color, borderColor: subj.color }}>{subj.icon} {subj.name}</span></td>
+                <td data-label="Type">{h.isOneOff ? "One-off" : (
+                  <span className="qt-routine-pill active">
+                    <Icon name="repeat" size={11}/> Routine{h.isCurrent && <span className="qt-current-week-tag">this week</span>}
+                  </span>
+                )}</td>
+                <td data-label="Week" className="qt-mono">{h.week || "—"}</td>
+                <td data-label="Completed on" className="qt-mono">{h.date || "—"}</td>
+                <td data-label="Score"><HistoryScoreCell entry={h} subject={subj} settings={settings} /></td>
+                <td>{h.link ? (
+                  <a className="qt-icon-btn" href={h.link} target="_blank" rel="noreferrer" aria-label={`Open link for ${h.quizName}`}><Icon name="link" size={13}/></a>
+                ) : null}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ================= Charts / progress analytics ================= */
+
+function ChartEmptyState({ children }) {
+  return <div className="qt-empty">{children}</div>;
+}
+
+function ChartCard({ title, subtitle, full, children }) {
+  return (
+    <div className={`qt-chart-card ${full ? "qt-chart-card-full" : ""}`}>
+      <div className="qt-chart-card-head">
+        <h3 className="qt-chart-card-title">{title}</h3>
+        {subtitle && <p className="qt-chart-card-subtitle">{subtitle}</p>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/* Horizontal CSS bar chart of average score per subject. Each track marks
+   that subject's own pass threshold as a tick (thresholds can be overridden
+   per-subject — see passThreshold on the Subject model), so a bar can visibly
+   clear or miss its own bar rather than a single global line. */
+function SubjectScoreBarChart({ subjects, subjectStats, settings, highlightSubjectId }) {
+  const rows = subjects
+    .map((s) => ({ subject: s, stats: subjectStats[s.id] }))
+    .filter((r) => r.stats && r.stats.attempts > 0 && r.stats.avgScore !== null);
+
+  if (rows.length === 0) {
+    return <ChartEmptyState>Grade a few completed quizzes to see average scores per subject here.</ChartEmptyState>;
+  }
+
+  return (
+    <div className="qt-bar-chart" role="group" aria-label="Average score by subject">
+      {rows.map(({ subject, stats }) => {
+        const avg = Math.round(stats.avgScore * 10) / 10;
+        const threshold = getThreshold(subject, settings);
+        const dimmed = highlightSubjectId && highlightSubjectId !== "all" && highlightSubjectId !== subject.id;
+        return (
+          <div className={`qt-bar-row ${dimmed ? "is-dimmed" : ""}`} key={subject.id}>
+            <div className="qt-bar-row-label">
+              <span className="qt-bar-row-icon" style={{ color: subject.color }}>{subject.icon}</span>
+              <span className="qt-bar-row-name">{subject.name}</span>
+            </div>
+            <div
+              className="qt-bar-track"
+              role="img"
+              aria-label={`${subject.name}: average score ${avg}%, pass threshold ${threshold}%, from ${stats.attempts} graded attempt${stats.attempts === 1 ? "" : "s"}`}
+            >
+              <div className="qt-bar-threshold-tick" style={{ left: `${Math.min(100, Math.max(0, threshold))}%` }} title={`Pass threshold ${threshold}%`} />
+              <div className="qt-bar-fill" style={{ width: `${Math.min(100, Math.max(0, avg))}%`, background: subject.color }} />
+            </div>
+            <div className="qt-bar-row-value qt-mono">
+              {avg}%
+              <span className="qt-bar-row-meta">{Math.round(stats.passRate * 100)}% pass · {stats.attempts} attempt{stats.attempts === 1 ? "" : "s"}</span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* Horizontal CSS bar chart: quizzes completed vs total logged, per subject. */
+function CompletionBarChart({ completionBySubject, highlightSubjectId }) {
+  const rows = completionBySubject.filter((r) => r.total > 0);
+  if (rows.length === 0) {
+    return <ChartEmptyState>Add quizzes to a subject to track completion here.</ChartEmptyState>;
+  }
+  return (
+    <div className="qt-bar-chart" role="group" aria-label="Completion by subject">
+      {rows.map(({ subject, total, completed }) => {
+        const pct = total ? Math.round((completed / total) * 100) : 0;
+        const dimmed = highlightSubjectId && highlightSubjectId !== "all" && highlightSubjectId !== subject.id;
+        return (
+          <div className={`qt-bar-row ${dimmed ? "is-dimmed" : ""}`} key={subject.id}>
+            <div className="qt-bar-row-label">
+              <span className="qt-bar-row-icon" style={{ color: subject.color }}>{subject.icon}</span>
+              <span className="qt-bar-row-name">{subject.name}</span>
+            </div>
+            <div className="qt-bar-track" role="img" aria-label={`${subject.name}: ${completed} of ${total} quizzes completed, ${pct}%`}>
+              <div className="qt-bar-fill" style={{ width: `${pct}%`, background: subject.color }} />
+            </div>
+            <div className="qt-bar-row-value qt-mono">{completed}/{total}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* SVG line chart of weekly average graded score over time, with a dashed
+   pass-threshold reference line. Renders a single labeled point when there's
+   only one week of data, and an empty state with none at all. The SVG is
+   decorative (role="img" with a headline aria-label summary); a visually-
+   hidden table right below it mirrors every point for screen-reader users
+   who need the exact per-week values, not just the trend summary. */
+function ScoreTrendChart({ points, threshold, accentColor }) {
+  if (points.length === 0) {
+    return <ChartEmptyState>Grade a few completed quizzes across different weeks to see a trend line here.</ChartEmptyState>;
+  }
+  const width = 640, height = 220;
+  const padding = { top: 18, right: 18, bottom: 30, left: 34 };
+  const innerW = width - padding.left - padding.right;
+  const innerH = height - padding.top - padding.bottom;
+  const n = points.length;
+  const xFor = (i) => (n === 1 ? padding.left + innerW / 2 : padding.left + (innerW * i) / (n - 1));
+  const yFor = (v) => padding.top + innerH - (Math.max(0, Math.min(100, v)) / 100) * innerH;
+  const pathD = points.map((p, i) => `${i === 0 ? "M" : "L"} ${xFor(i).toFixed(1)} ${yFor(p.avg).toFixed(1)}`).join(" ");
+  const first = points[0], last = points[points.length - 1];
+  const trendWord = points.length > 1 ? (last.avg > first.avg ? "trending up" : last.avg < first.avg ? "trending down" : "holding steady") : "a single week so far";
+  const summary = points.length > 1
+    ? `Score trend across ${n} weeks: ${first.avg}% to ${last.avg}%, ${trendWord}.`
+    : `Score trend: ${trendWord}, averaging ${first.avg}% for week ${first.weekKey}.`;
+  // Thin out x-axis week labels on wide ranges so they don't overlap.
+  const labelStep = Math.max(1, Math.ceil(n / 7));
+
+  return (
+    <div className="qt-trend-chart">
+      <svg className="qt-trend-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={summary} preserveAspectRatio="xMidYMid meet">
+        <title>{summary}</title>
+        {[0, 25, 50, 75, 100].map((g) => (
+          <g key={g}>
+            <line x1={padding.left} x2={width - padding.right} y1={yFor(g)} y2={yFor(g)} stroke="var(--line)" strokeWidth="1" />
+            <text x={padding.left - 8} y={yFor(g) + 3} textAnchor="end" fontSize="9" fontFamily="IBM Plex Mono, monospace" fill="var(--ink-soft)">{g}</text>
+          </g>
+        ))}
+        {typeof threshold === "number" && (
+          <line x1={padding.left} x2={width - padding.right} y1={yFor(threshold)} y2={yFor(threshold)} stroke="var(--gold)" strokeWidth="1.5" strokeDasharray="4 4" />
+        )}
+        {n > 1 && <path d={pathD} fill="none" stroke={accentColor || "var(--teal)"} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />}
+        {points.map((p, i) => (
+          <circle key={p.weekKey} cx={xFor(i)} cy={yFor(p.avg)} r={n === 1 ? 5 : 3.5} fill={accentColor || "var(--teal)"} stroke="var(--paper-raised)" strokeWidth="1.5">
+            <title>{`${p.weekKey}: ${p.avg}% average (${p.count} graded)`}</title>
+          </circle>
+        ))}
+        {points.map((p, i) => (i % labelStep === 0 || i === n - 1) && (
+          <text key={`lbl-${p.weekKey}`} x={xFor(i)} y={height - 8} textAnchor="middle" fontSize="9" fontFamily="IBM Plex Mono, monospace" fill="var(--ink-soft)">
+            {p.weekKey.replace(/^\d{4}-W/, "W")}
+          </text>
+        ))}
+      </svg>
+      <table className="qt-sr-only">
+        <caption>Weekly average graded score</caption>
+        <thead><tr><th scope="col">Week</th><th scope="col">Average score</th><th scope="col">Graded attempts</th></tr></thead>
+        <tbody>
+          {points.map((p) => (<tr key={p.weekKey}><td>{p.weekKey}</td><td>{p.avg}%</td><td>{p.count}</td></tr>))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* Top-level Charts tab: an overall score trend plus per-subject breakdowns.
+   A single "focus subject" selector narrows the trend line (and dims the
+   other bars) to one subject at a time, so progress on any individual
+   subject — not just the aggregate — is easy to isolate. */
+function ChartsView({ quizzes, historyLog, subjects, subjectMap, settings, subjectStats }) {
+  const [chartSubject, setChartSubject] = useState("all");
+
+  const combinedHistory = useMemo(() => getCombinedHistory(quizzes, historyLog), [quizzes, historyLog]);
+
+  const completionBySubject = useMemo(() => {
+    const map = {};
+    subjects.forEach((s) => { map[s.id] = { subject: s, total: 0, completed: 0 }; });
+    quizzes.forEach((q) => {
+      const subj = subjectMap[q.subjectId];
+      if (!subj) return;
+      if (!map[q.subjectId]) map[q.subjectId] = { subject: subj, total: 0, completed: 0 };
+      map[q.subjectId].total += 1;
+      if (q.completed) map[q.subjectId].completed += 1;
+    });
+    return Object.values(map);
+  }, [quizzes, subjects, subjectMap]);
+
+  const trendEntries = useMemo(
+    () => (chartSubject === "all" ? combinedHistory : combinedHistory.filter((h) => h.subjectId === chartSubject)),
+    [combinedHistory, chartSubject]
+  );
+  const trendPoints = useMemo(() => aggregateWeeklyScores(trendEntries), [trendEntries]);
+  const trendThreshold = chartSubject === "all" ? settings.passingThreshold : getThreshold(subjectMap[chartSubject], settings);
+  const trendAccent = chartSubject === "all" ? "var(--teal)" : (subjectMap[chartSubject]?.color || "var(--teal)");
+
+  const hasAnyData = quizzes.length > 0 || historyLog.length > 0;
+  if (!hasAnyData) {
+    return <div className="qt-empty">Add and complete a few quizzes to start seeing your progress charts here.</div>;
+  }
+
+  return (
+    <div className="qt-charts-view">
+      <div className="qt-chart-controls">
+        <label className="qt-panel-field qt-chart-subject-field"><span>Focus subject</span>
+          <FilterSelect value={chartSubject} onChange={setChartSubject} ariaLabel="Focus charts on a subject"
+            options={[{ value: "all", label: "All subjects" }, ...subjects.map((s) => ({ value: s.id, label: `${s.icon} ${s.name}` }))]} />
+        </label>
+      </div>
+
+      <div className="qt-charts-grid">
+        <ChartCard title="Score trend over time" subtitle="Weekly average of graded quiz scores, with your pass threshold marked." full>
+          <ScoreTrendChart points={trendPoints} threshold={trendThreshold} accentColor={trendAccent} />
+        </ChartCard>
+        <ChartCard title="Average score by subject" subtitle="Across all graded attempts to date.">
+          <SubjectScoreBarChart subjects={subjects} subjectStats={subjectStats} settings={settings} highlightSubjectId={chartSubject} />
+        </ChartCard>
+        <ChartCard title="Completion by subject" subtitle="Quizzes marked done out of everything logged.">
+          <CompletionBarChart completionBySubject={completionBySubject} highlightSubjectId={chartSubject} />
+        </ChartCard>
+      </div>
+    </div>
+  );
+}
+
+function WeekView({ quizzes, subjectMap, counts, onToggleComplete }) {
+  return (
+    <div className="qt-week-wrap">
+      {WEEKDAYS.map((day, i) => {
+        const items = quizzes.filter((q) => q.isRoutine && q.scheduledDay === day);
+        return (
+          <div className={`qt-day-col ${i === TODAY_IDX ? "is-today" : ""}`} key={day}>
+            <div className="qt-day-head"><span>{day}</span><span className="qt-day-count">{counts[day] || 0}</span></div>
+            <div className="qt-day-body">
+              {items.length === 0 && <div className="qt-day-empty">No routine quizzes</div>}
+              {items.map((q) => {
+                const subj = subjectMap[q.subjectId] || { icon: "•", color: "#999" };
+                return (
+                  <button
+                    key={q.id}
+                    className={`qt-day-card ${q.completed ? "is-complete" : ""}`}
+                    onClick={() => onToggleComplete(q.id)}
+                    aria-pressed={q.completed}
+                    aria-label={q.completed ? `Mark "${q.name}" as incomplete` : `Mark "${q.name}" as complete`}
+                  >
+                    <span className="qt-day-card-icon" style={{ color: subj.color }}>{subj.icon}</span>
+                    <span className="qt-day-card-name">{q.name}</span>
+                    {q.completed && <Icon name="check" size={12} className="qt-day-card-check" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function MonthView({ quizzes, subjectMap, settings, todayISO, onToggleComplete, onEdit }) {
+  const [cursor, setCursor] = useState(() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() }; });
+  const weeks = useMemo(() => buildMonthMatrix(cursor.year, cursor.month), [cursor]);
+  const monthPrefix = `${cursor.year}-${pad2(cursor.month + 1)}`;
+  const byDate = useMemo(() => {
+    const map = {};
+    quizzes.forEach((q) => { if (q.dueDate) { (map[q.dueDate] = map[q.dueDate] || []).push(q); } });
+    return map;
+  }, [quizzes]);
+  /* Routine quizzes without a fixed due date recur weekly on their scheduled
+     weekday, so — rather than being invisible on the calendar — group them
+     by weekday and show a dashed "ghost" chip on every matching cell in the
+     visible month. buildMonthMatrix's rows are always Mon..Sun (see WEEKDAYS),
+     so a cell's column index maps directly to a weekday name. */
+  const routineByDay = useMemo(() => {
+    const map = Object.fromEntries(WEEKDAYS.map((d) => [d, []]));
+    quizzes.forEach((q) => { if (q.isRoutine && q.scheduledDay && !q.dueDate) map[q.scheduledDay].push(q); });
+    return map;
+  }, [quizzes]);
+  const monthQuizzes = useMemo(() => quizzes.filter((q) => q.dueDate && q.dueDate.startsWith(monthPrefix)), [quizzes, monthPrefix]);
+  const monthCompleted = monthQuizzes.filter((q) => q.completed).length;
+
+  const goPrev = () => setCursor((c) => { const m = c.month - 1 < 0 ? 11 : c.month - 1; const y = c.month - 1 < 0 ? c.year - 1 : c.year; return { year: y, month: m }; });
+  const goNext = () => setCursor((c) => { const m = c.month + 1 > 11 ? 0 : c.month + 1; const y = c.month + 1 > 11 ? c.year + 1 : c.year; return { year: y, month: m }; });
+  const goToday = () => { const d = new Date(); setCursor({ year: d.getFullYear(), month: d.getMonth() }); };
+
+  return (
+    <div className="qt-month-wrap">
+      <div className="qt-month-head">
+        <div className="qt-month-nav">
+          <button className="qt-icon-btn" onClick={goPrev} aria-label="Previous month"><Icon name="chevronLeft" size={16}/></button>
+          <span className="qt-month-title">{MONTH_NAMES[cursor.month]} {cursor.year}</span>
+          <button className="qt-icon-btn" onClick={goNext} aria-label="Next month"><Icon name="chevronRight" size={16}/></button>
+        </div>
+        <div className="qt-month-summary">
+          <button className="qt-btn qt-btn-ghost qt-month-today-btn" onClick={goToday}>Today</button>
+          <span className="qt-month-summary-text">{monthQuizzes.length ? `${monthCompleted}/${monthQuizzes.length} due-date quizzes done this month` : "No dated quizzes this month"}</span>
+        </div>
+      </div>
+      <div className="qt-month-grid">
+        {WEEKDAYS.map((d) => <div className="qt-month-weekday" key={d}>{d}</div>)}
+        {weeks.map((week, wi) => week.map((cell, ci) => {
+          const dated = byDate[cell.iso] || [];
+          const routineItems = cell.inMonth ? (routineByDay[WEEKDAYS[ci]] || []) : [];
+          const items = [...dated, ...routineItems];
+          const isToday = cell.iso === todayISO;
+          return (
+            <div className={`qt-month-cell ${cell.inMonth ? "" : "is-outside"} ${isToday ? "is-today" : ""}`} key={cell.iso + wi}>
+              <div className="qt-month-daynum">{cell.day}</div>
+              <div className="qt-month-items">
+                {items.slice(0, 3).map((q) => {
+                  const subj = subjectMap[q.subjectId] || { icon: "•", color: "#999" };
+                  const isGhost = !q.dueDate;
+                  return (
+                    <button key={(isGhost ? "r-" : "d-") + q.id} className={`qt-month-chip ${q.completed ? "is-complete" : ""} ${isGhost ? "is-routine-ghost" : ""}`}
+                      onClick={() => onEdit(q)} title={isGhost ? `${q.name} · routine, recurs every ${q.scheduledDay}` : q.name}>
+                      <span style={{ color: subj.color }}>{subj.icon}</span>
+                      <span className="qt-month-chip-name">{q.name}</span>
+                      {isGhost && <Icon name="repeat" size={9}/>}
+                    </button>
+                  );
+                })}
+                {items.length > 3 && <div className="qt-month-more">+{items.length - 3} more</div>}
+              </div>
+            </div>
+          );
+        }))}
+      </div>
+    </div>
+  );
+}
+
+function QuizModal({ subjects, settings, initial, onClose, onSave }) {
+  const [name, setName] = useState(initial?.name || "");
+  const [subjectId, setSubjectId] = useState(initial?.subjectId || subjects[0]?.id || "");
+  const [dueDate, setDueDate] = useState(initial?.dueDate || "");
+  const [link, setLink] = useState(initial?.link || "");
+  const [isRoutine, setIsRoutine] = useState(initial?.isRoutine || false);
+  const [scheduledDay, setScheduledDay] = useState(initial?.scheduledDay || "");
+  const [trackScore, setTrackScore] = useState(initial?.trackScore || false);
+  const [completed, setCompleted] = useState(initial?.completed || false);
+  const [description, setDescription] = useState(initial?.description || "");
+  const [scoreMode, setScoreMode] = useState(() => (typeof initial?.totalItems === "number" ? "items" : (typeof initial?.score === "number" ? "percent" : "items")));
+  const [totalItems, setTotalItems] = useState(initial?.totalItems ?? "");
+  const [correctItems, setCorrectItems] = useState(initial?.correctItems ?? "");
+  const [percentScore, setPercentScore] = useState(initial?.score ?? "");
+
+  useEffect(() => {
+    const onKeyDown = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  const subject = subjects.find((s) => s.id === subjectId);
+  const threshold = getThreshold(subject, settings);
+  const previewPercent = scoreMode === "items"
+    ? (totalItems !== "" && correctItems !== "" && Number(totalItems) > 0 ? Math.round((Number(correctItems) / Number(totalItems)) * 1000) / 10 : null)
+    : (percentScore !== "" ? Number(percentScore) : null);
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    const data = {
+      id: initial?.id, name: name.trim(), subjectId, dueDate, isRoutine, trackScore, completed,
+      description: description.trim(),
+      link: link.trim(),
+      scheduledDay: isRoutine ? (scheduledDay || null) : null,
+      totalItems: null, correctItems: null, score: null,
+    };
+    if (trackScore) {
+      if (scoreMode === "items") {
+        data.totalItems = totalItems === "" ? null : Math.max(1, Number(totalItems));
+        data.correctItems = correctItems === "" ? null : Math.max(0, Math.min(data.totalItems ?? Number(correctItems), Number(correctItems)));
+      } else {
+        data.score = percentScore === "" ? null : Math.max(0, Math.min(100, Number(percentScore)));
+      }
+    }
+    onSave(data);
+  };
+
+  return (
+    <div className="qt-modal-overlay" onClick={onClose}>
+      <form className="qt-modal" onClick={(e) => e.stopPropagation()} onSubmit={submit} role="dialog" aria-modal="true" aria-label={initial ? "Edit quiz" : "New quiz"}>
+        <div className="qt-modal-head"><h2>{initial ? "Edit quiz" : "New quiz"}</h2><button type="button" className="qt-icon-btn" onClick={onClose} aria-label="Close"><Icon name="x" size={16}/></button></div>
+        <label className="qt-field"><span>Name</span><input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Lesson INT-5" required /></label>
+        <label className="qt-field"><span>Subject</span><select value={subjectId} onChange={(e) => setSubjectId(e.target.value)}>{subjects.map((s) => (<option key={s.id} value={s.id}>{s.icon} {s.name}</option>))}</select></label>
+        <label className="qt-field"><span>Due date (optional)</span><input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></label>
+        <label className="qt-field"><span>Quiz link (optional)</span><input type="url" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://…" /></label>
+        <label className="qt-field"><span>Notes</span><input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional description" /></label>
+        <div className="qt-field-row">
+          <label className="qt-checkline"><input type="checkbox" checked={isRoutine} onChange={(e) => setIsRoutine(e.target.checked)} /><span>Tag as Routine <em>(scheduled to a weekday)</em></span></label>
+          {isRoutine && (
+            <label className="qt-field" style={{ margin: "2px 0 0 26px" }}>
+              <span>Scheduled day</span>
+              <select value={scheduledDay} onChange={(e) => setScheduledDay(e.target.value)}>
+                <option value="">Auto-assign (least busy day)</option>
+                {WEEKDAYS.map((d) => (<option key={d} value={d}>{d}</option>))}
+              </select>
+            </label>
+          )}
+          <label className="qt-checkline"><input type="checkbox" checked={trackScore} onChange={(e) => setTrackScore(e.target.checked)} /><span>Track a score (exam)</span></label>
+          <label className="qt-checkline"><input type="checkbox" checked={completed} onChange={(e) => setCompleted(e.target.checked)} /><span>Mark as completed</span></label>
+        </div>
+
+        {trackScore && (
+          <div className="qt-field-row qt-grading-row">
+            <div className="qt-grading-mode-toggle">
+              <button type="button" className={`qt-toggle-btn qt-toggle-btn-sm ${scoreMode === "items" ? "active" : ""}`} onClick={() => setScoreMode("items")}>By item count</button>
+              <button type="button" className={`qt-toggle-btn qt-toggle-btn-sm ${scoreMode === "percent" ? "active" : ""}`} onClick={() => setScoreMode("percent")}>Direct percent</button>
+            </div>
+            {scoreMode === "items" ? (
+              <div className="qt-grading-inputs">
+                <label className="qt-field qt-field-inline"><span>Total items</span><input type="number" min="1" value={totalItems} onChange={(e) => setTotalItems(e.target.value)} placeholder="e.g. 500" /></label>
+                <label className="qt-field qt-field-inline"><span>Correct answers</span><input type="number" min="0" value={correctItems} onChange={(e) => setCorrectItems(e.target.value)} placeholder="e.g. 423" /></label>
+              </div>
+            ) : (
+              <label className="qt-field"><span>Score (%)</span><input type="number" min="0" max="100" value={percentScore} onChange={(e) => setPercentScore(e.target.value)} placeholder="e.g. 85" /></label>
+            )}
+            <div className="qt-grading-preview">
+              {previewPercent !== null ? (
+                <span className={previewPercent >= threshold ? "qt-preview-pass" : "qt-preview-fail"}>
+                  {previewPercent}% — {previewPercent >= threshold ? "Passing" : "Below passing"} (threshold {threshold}%)
+                </span>
+              ) : (
+                <span className="qt-preview-empty">Enter a score to see the computed grade</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="qt-modal-actions"><button type="button" className="qt-btn qt-btn-ghost" onClick={onClose}>Cancel</button><button type="submit" className="qt-btn qt-btn-primary">{initial ? "Save changes" : "Add quiz"}</button></div>
+      </form>
+    </div>
+  );
+}
+
+function SettingsModal({ subjects, settings, onAddSubject, onDeleteSubject, onSubjectThreshold, onGlobalThreshold, onClose }) {
+  const [name, setName] = useState("");
+  const [icon, setIcon] = useState("📗");
+  const palette = [
+    { color: "#1F6F63", soft: "#DCEFE9" }, { color: "#D48A1F", soft: "#FBE9CE" }, { color: "#C23B6B", soft: "#FBE0EA" },
+    { color: "#3763A8", soft: "#DEE7F7" }, { color: "#7C4FB0", soft: "#EAE0F6" }, { color: "#1E8FA0", soft: "#D9F0F3" },
+    { color: "#C4472B", soft: "#FADCD4" }, { color: "#4F8A2E", soft: "#E1F0D6" }, { color: "#B5308B", soft: "#F7DCEE" },
+    { color: "#9A7B1F", soft: "#F4EACB" },
+  ];
+  const [colorIdx, setColorIdx] = useState(0);
+
+  useEffect(() => {
+    const onKeyDown = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  const submit = (e) => { e.preventDefault(); if (!name.trim()) return; onAddSubject(name.trim(), icon, palette[colorIdx].color, palette[colorIdx].soft); setName(""); };
+
+  return (
+    <div className="qt-modal-overlay" onClick={onClose}>
+      <div className="qt-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Settings">
+        <div className="qt-modal-head"><h2>Settings</h2><button type="button" className="qt-icon-btn" onClick={onClose} aria-label="Close"><Icon name="x" size={16}/></button></div>
+
+        <div className="qt-settings-section">
+          <h3 className="qt-settings-heading">Grading</h3>
+          <p className="qt-settings-helper">
+            Graded quizzes compute their score as <strong>(correct ÷ total items) × 100</strong>. A quiz counts as
+            <strong> Passed</strong> once that score meets the threshold below, otherwise it's <strong>Failed</strong> —
+            no manual judgment calls. Status also separates <strong>Incomplete</strong> (not yet done) from
+            <strong> Overdue</strong> (not done and past its due date), so nothing is ambiguous.
+          </p>
+          <label className="qt-field qt-field-inline">
+            <span>Default passing threshold (%)</span>
+            <input type="number" min="0" max="100" value={settings.passingThreshold} onChange={(e) => onGlobalThreshold(e.target.value)} />
+          </label>
+        </div>
+
+        <div className="qt-settings-section">
+          <h3 className="qt-settings-heading">Subjects</h3>
+          <p className="qt-settings-helper">Optionally override the passing threshold per subject — leave blank to use the default above.</p>
+          <div className="qt-subject-list">
+            {subjects.map((s) => (
+              <div className="qt-subject-row" key={s.id}>
+                <span className="qt-subject-pill" style={{ background: s.soft, color: s.color }}>{s.icon} {s.name}</span>
+                <div className="qt-subject-row-controls">
+                  <input type="number" min="0" max="100" className="qt-subject-threshold-input" placeholder={`${settings.passingThreshold}`}
+                    value={s.passThreshold ?? ""} onChange={(e) => onSubjectThreshold(s.id, e.target.value)} aria-label={`Passing threshold override for ${s.name}`} />
+                  <button className="qt-icon-btn danger" onClick={() => onDeleteSubject(s.id)} aria-label={`Delete subject ${s.name}`}><Icon name="trash" size={13}/></button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <form className="qt-add-subject" onSubmit={submit}>
+            <input className="qt-icon-input" value={icon} onChange={(e) => setIcon(e.target.value)} maxLength={2} aria-label="Subject icon (emoji)" />
+            <input className="qt-name-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="New subject name" aria-label="New subject name" />
+            <div className="qt-swatches">{palette.map((p, i) => (<button type="button" key={i} className={`qt-swatch ${colorIdx === i ? "active" : ""}`} style={{ background: p.color }} onClick={() => setColorIdx(i)} aria-pressed={colorIdx === i} aria-label={`Color option ${i + 1}`} />))}</div>
+            <button type="submit" className="qt-btn qt-btn-primary"><Icon name="plus" size={14}/> Add</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+
+<style>
+.qt-root {
+  --paper: #FAFAF8; --paper-raised: #FFFFFF; --ink: #1C2321; --ink-soft: #5B645F; --line: #E4E1D9;
+  --teal: #1F6F63; --teal-soft: #E4EFEC; --gold: #C89B3C; --gold-soft: #F6EFDD; --rose: #B5556B; --rose-soft: #F5E7EA;
+  font-family: 'Inter', sans-serif; color: var(--ink); background: var(--paper);
+  padding: 28px; border-radius: 16px; max-width: 1180px; width: 100%; margin: 0 auto;
+  box-shadow: 0 1px 40px rgba(28,35,33,0.06);
+}
+.qt-root * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+.qt-root input, .qt-root select, .qt-root button { font-family: inherit; }
+.qt-loading { display:flex; align-items:center; justify-content:center; min-height: 300px; }
+.qt-spinner { width: 28px; height:28px; border-radius:50%; border:3px solid var(--line); border-top-color: var(--teal); animation: qt-spin 0.8s linear infinite; }
+@keyframes qt-spin { to { transform: rotate(360deg); } }
+.qt-header { margin-bottom: 22px; }
+.qt-eyebrow-row { display:flex; align-items:center; justify-content:space-between; gap: 10px; flex-wrap: wrap; }
+.qt-eyebrow { font-family:'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.14em; color: var(--teal); font-weight:600; margin-bottom:6px; }
+.qt-save-status { display:inline-flex; align-items:center; gap:5px; font-family:'IBM Plex Mono', monospace; font-size: 10.5px; color: var(--ink-soft); }
+.qt-save-status.qt-save-saved { color: var(--teal); }
+.qt-save-status.qt-save-error { color: var(--rose); }
+.qt-status-group { display:flex; align-items:center; gap:12px; flex-wrap: wrap; }
+.qt-drive-synced { color: var(--teal); }
+.qt-drive-syncing { color: var(--ink-soft); }
+.qt-drive-conflict, .qt-drive-error { color: var(--rose); }
+
+.qt-banner { display:flex; align-items:center; gap:8px; padding: 9px 12px; border-radius: 10px; font-size: 12.5px; line-height:1.4; margin: 0 0 14px; }
+.qt-banner span { flex: 1; }
+.qt-banner-info { background: var(--teal-soft); color: var(--ink); }
+.qt-banner-warning { background: var(--gold-soft); color: var(--ink); }
+.qt-banner-action { flex: 0 0 auto; padding: 5px 10px; font-size: 12px; }
+
+.qt-conflict-actions { display:flex; flex-direction: column; gap:8px; margin-top: 14px; }
+.qt-conflict-actions .qt-btn { justify-content: center; }
+
+.qt-btn:disabled, .qt-icon-btn:disabled, .qt-more-menu-item:disabled {
+  opacity: 0.45; cursor: not-allowed; pointer-events: none;
+}
+.qt-fab:disabled { opacity: 0.5; cursor: not-allowed; }
+.qt-title { font-family: 'Fraunces', serif; font-size: 34px; font-weight: 600; margin: 0 0 6px; line-height: 1.1; }
+.qt-subtitle { color: var(--ink-soft); font-size: 14px; max-width: 560px; margin: 0 0 18px; line-height: 1.5; }
+/* ---- header overview: unified snapshot bar + insight row ---- */
+.qt-overview { display:flex; flex-direction:column; gap: 10px; }
+.qt-overview-primary { background: var(--paper-raised); border:1px solid var(--line); border-radius: 14px; padding: 12px 18px; display:flex; align-items:center; justify-content:space-between; gap: 16px; flex-wrap: wrap; }
+.qt-mini-stats { display:flex; align-items:center; gap: 18px; flex-wrap: wrap; }
+.qt-mini-stat { display:flex; align-items:center; gap: 8px; }
+.qt-mini-stat-icon { color: var(--teal); background: var(--teal-soft); border-radius:8px; width:26px; height:26px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+.qt-mini-stat-value { font-family:'IBM Plex Mono', monospace; font-weight:600; font-size: 16px; line-height:1.15; }
+.qt-mini-stat-label { font-size: 10.5px; color: var(--ink-soft); margin-top:1px; white-space: nowrap; }
+.qt-mini-divider { width:1px; height: 28px; background: var(--line); flex-shrink:0; }
+.qt-gauge-card { display:flex; align-items:center; gap:10px; flex-shrink: 0; }
+.qt-gauge-label { font-size: 11px; color: var(--ink-soft); line-height: 1.3; }
+.qt-overview-insights { display:flex; gap: 10px; flex-wrap: wrap; }
+.qt-rec-card { background: var(--paper-raised); border:1px solid var(--line); border-radius: 12px; padding: 11px 16px; display:flex; align-items:center; gap:14px; flex: 1; min-width: 240px; }
+.qt-stamp { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; border: 2px dashed; border-radius: 8px; padding: 7px 9px; transform: rotate(-4deg); white-space: nowrap; flex-shrink: 0; }
+.qt-rec-detail { font-size: 12px; color: var(--ink-soft); margin:0; line-height: 1.45; }
+.qt-focus-card { background: var(--paper-raised); border:1px solid var(--line); border-radius: 12px; padding: 11px 16px; display:flex; align-items:center; gap:12px; flex: 1; min-width: 240px; }
+.qt-focus-icon { width:28px; height:28px; border-radius:9px; display:flex; align-items:center; justify-content:center; flex-shrink:0; color: var(--rose); background: var(--rose-soft); }
+.qt-focus-title { font-size: 12px; font-weight:700; margin-bottom: 2px; }
+.qt-focus-detail { font-size: 11.5px; color: var(--ink-soft); line-height: 1.45; margin:0; }
+.qt-focus-empty .qt-focus-icon { color: var(--ink-soft); background: var(--paper); }
+.qt-priority-flag { display:inline-flex; color: var(--rose); margin-right: 5px; vertical-align: -1px; }
+
+/* ---- toolbar: view tabs + compact action cluster ---- */
+.qt-toolbar { position: relative; display:flex; flex-wrap:wrap; gap: 10px; align-items:center; justify-content: space-between; margin: 22px 0 14px; }
+.qt-menu-backdrop { position: fixed; inset: 0; z-index: 39; background: transparent; }
+.qt-view-toggle { display:flex; background: var(--paper-raised); border:1px solid var(--line); border-radius: 10px; padding: 3px; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.qt-view-toggle::-webkit-scrollbar { display: none; }
+.qt-toggle-btn { display:flex; align-items:center; gap:6px; border:none; background:transparent; padding: 7px 12px; border-radius: 8px; font-size:13px; font-weight:500; color: var(--ink-soft); cursor:pointer; white-space: nowrap; flex-shrink: 0; }
+.qt-toggle-btn.active { background: var(--ink); color: #fff; }
+.qt-toggle-btn-sm { padding: 5px 9px; font-size: 12px; }
+.qt-toolbar-actions { display:flex; align-items:center; gap:8px; flex-wrap: wrap; }
+.qt-select-wrap { position:relative; display:flex; align-items:center; }
+.qt-select-icon { position:absolute; left:9px; color: var(--ink-soft); pointer-events:none; display:flex; }
+.qt-select { width: 100%; appearance:none; background: var(--paper-raised); border:1px solid var(--line); border-radius: 8px; font-size: 12.5px; padding: 7px 26px 7px 10px; color: var(--ink); cursor:pointer; }
+.qt-select-chevron { position:absolute; right:8px; color: var(--ink-soft); pointer-events:none; }
+.qt-search-wrap { position:relative; display:flex; align-items:center; }
+.qt-search-input { background: var(--paper-raised); border:1px solid var(--line); border-radius: 8px; font-size: 12.5px; padding: 7px 26px; color: var(--ink); width: 170px; font-family: 'Inter', sans-serif; }
+.qt-search-input:focus { outline: 2px solid var(--teal); outline-offset: 1px; }
+.qt-search-clear { position:absolute; right:6px; border:none; background:transparent; color: var(--ink-soft); cursor:pointer; display:flex; padding: 2px; border-radius: 4px; }
+.qt-search-clear:hover { color: var(--ink); }
+
+.qt-filter-wrap { position: relative; }
+.qt-btn.has-active { border-color: var(--teal); color: var(--teal); }
+.qt-filter-count { display:inline-flex; align-items:center; justify-content:center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; background: var(--teal); color:#fff; font-size: 10px; font-weight:700; line-height:1; }
+.qt-filters-panel { position:absolute; top: calc(100% + 8px); right:0; z-index: 40; background: var(--paper-raised); border:1px solid var(--line); border-radius: 12px; padding: 12px; box-shadow: 0 12px 32px rgba(28,35,33,0.12); width: 260px; display:flex; flex-direction:column; gap: 10px; }
+.qt-filters-panel-head { display:flex; align-items:center; justify-content:space-between; font-size: 11px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color: var(--ink-soft); margin-bottom: 2px; }
+.qt-panel-field { display:flex; flex-direction:column; gap:4px; font-size: 11px; font-weight:600; color: var(--ink-soft); }
+.qt-panel-field .qt-select-wrap { width: 100%; }
+.qt-filters-reset { justify-content:center; margin-top: 2px; }
+
+.qt-more-wrap { position: relative; }
+.qt-more-btn { width: 34px; height: 34px; border: 1px solid var(--line); background: var(--paper-raised); border-radius: 8px; }
+.qt-more-menu { position:absolute; top: calc(100% + 8px); right:0; background: var(--paper-raised); border:1px solid var(--line); border-radius: 12px; padding: 8px; z-index: 40; box-shadow: 0 12px 32px rgba(28,35,33,0.12); min-width: 200px; display:flex; flex-direction:column; }
+.qt-more-menu-label { font-size: 10.5px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color: var(--ink-soft); padding: 6px 8px 4px; }
+.qt-more-menu-check { padding: 5px 8px; }
+.qt-more-menu-divider { height:1px; background: var(--line); margin: 6px 2px; }
+.qt-more-menu-item { display:flex; align-items:center; gap:8px; border:none; background:transparent; padding: 8px; border-radius: 8px; font-size: 13px; font-weight:500; color: var(--ink); cursor:pointer; text-align:left; }
+.qt-more-menu-item:hover { background: var(--paper); }
+
+.qt-new-quiz-btn { margin-left: 2px; }
+.qt-fab { display:none; }
+.qt-btn { display:flex; align-items:center; gap:6px; border-radius: 8px; padding: 8px 13px; font-size: 13px; font-weight:600; cursor:pointer; border:1px solid transparent; }
+.qt-btn-primary { background: var(--ink); color:#fff; }
+.qt-btn-primary:hover { background:#000; }
+.qt-btn-ghost { background: var(--paper-raised); border-color: var(--line); color: var(--ink); }
+.qt-btn-ghost:hover { border-color: var(--ink); }
+.qt-table-wrap { background: var(--paper-raised); border:1px solid var(--line); border-radius: 14px; overflow-x: auto; }
+.qt-table { width:100%; border-collapse: collapse; min-width: 780px; }
+.qt-table th { text-align:left; font-size: 11px; letter-spacing: 0.04em; color: var(--ink-soft); font-weight:600; padding: 12px 14px; border-bottom: 1px solid var(--line); background: #FCFBF9; }
+.qt-th-sort-btn { display:inline-flex; align-items:center; gap:4px; background:none; border:none; padding:0; margin:0; font: inherit; letter-spacing: inherit; color: inherit; cursor:pointer; }
+.qt-th-sort-btn:hover { color: var(--ink); }
+.qt-th-sort-btn.active { color: var(--ink); }
+.qt-th-sort-btn:focus-visible { outline: 2px solid var(--teal); outline-offset: 3px; border-radius: 3px; }
+.qt-th-sort-icon { display:inline-flex; color: var(--ink-soft); flex-shrink:0; }
+.qt-th-sort-btn.active .qt-th-sort-icon { color: var(--teal); }
+.qt-sort-field-row { display:flex; align-items:center; gap:6px; }
+.qt-sort-field-row .qt-select-wrap { flex: 1; }
+.qt-sort-dir-btn { flex-shrink:0; border: 1px solid var(--line); }
+.qt-table td { padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: middle; font-size: 13.5px; }
+.qt-table tr:last-child td { border-bottom: none; }
+.qt-table tr.is-complete .qt-name { color: var(--ink-soft); text-decoration: line-through; }
+.qt-overdue-text { color: var(--rose); font-weight: 600; }
+.qt-overdue-tag { display:inline-flex; align-items:center; gap:3px; margin-left:6px; font-size:10.5px; font-weight:700; letter-spacing:0.03em; text-transform:uppercase; color: var(--rose); }
+.qt-routine-next-date { display:inline-flex; align-items:center; gap:5px; color: var(--ink-soft); font-style: italic; }
+.qt-routine-next-tag { font-family:'Inter', sans-serif; font-style: normal; font-size:9.5px; font-weight:700; letter-spacing:0.05em; text-transform:uppercase; color: var(--ink-soft); background: var(--paper); border: 1px solid var(--line); border-radius: 999px; padding: 1px 6px; }
+.qt-current-week-tag { font-family:'Inter', sans-serif; font-size:9.5px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; margin-left:5px; opacity: 0.8; }
+.qt-checkbox { width:20px; height:20px; border-radius:6px; border:1.5px solid var(--line); background:#fff; display:flex; align-items:center; justify-content:center; cursor:pointer; color:#fff; }
+.qt-checkbox.checked { background: var(--teal); border-color: var(--teal); }
+.qt-name-cell { cursor:pointer; display:flex; flex-direction:column; gap: 2px; }
+.qt-name { font-weight: 500; display:inline-flex; align-items:center; gap:6px; }
+.qt-link-icon { color: var(--ink-soft); display:inline-flex; align-items:center; cursor:pointer; }
+.qt-link-icon:hover { color: var(--teal); }
+.qt-desc-tag { font-family:'IBM Plex Mono', monospace; font-size: 10px; color: var(--ink-soft); letter-spacing: 0.04em; }
+.qt-subject-pill { display:inline-flex; align-items:center; gap:5px; font-size: 12px; font-weight:700; padding: 4px 10px; border-radius: 999px; white-space:nowrap; border: 1.5px solid; }
+.qt-mono { font-family:'IBM Plex Mono', monospace; font-size: 12.5px; color: var(--ink-soft); }
+.qt-muted { opacity: 0.5; }
+.qt-routine-pill { display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:600; padding: 5px 9px; border-radius: 999px; border:1px solid var(--line); background:#fff; color: var(--ink-soft); cursor:pointer; }
+.qt-routine-pill.active { background: var(--rose-soft); color: var(--rose); border-color: transparent; }
+.qt-score-cell { display:flex; align-items:center; gap:8px; flex-wrap: wrap; }
+.qt-score-fraction { display:flex; align-items:center; gap:6px; }
+.qt-score-of { font-family:'IBM Plex Mono', monospace; font-size: 12px; color: var(--ink-soft); }
+.qt-score-stepper { display:inline-flex; align-items:center; gap:0; background: var(--paper); border:1px solid var(--line); border-radius: 999px; padding: 2px; transition: border-color .15s ease, box-shadow .15s ease; }
+.qt-score-stepper:focus-within { border-color: var(--accent, var(--teal)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent, var(--teal)) 18%, transparent); }
+.qt-score-step-btn { width: 22px; height: 22px; border:none; border-radius: 50%; background: transparent; color: var(--ink-soft); display:flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; transition: background .15s ease, color .15s ease, transform .1s ease; }
+.qt-score-step-btn:hover { background: var(--paper-raised); color: var(--accent, var(--ink)); }
+.qt-score-step-btn:active { transform: scale(0.88); }
+.qt-score-input { width: 52px; border:none; background:transparent; border-radius:6px; padding: 5px 2px; font-family:'IBM Plex Mono', monospace; font-size:13px; text-align:center; transition: background .15s ease; }
+.qt-score-input:focus { outline:none; background: var(--paper-raised); }
+.qt-score-input-sm { width: 44px; }
+.qt-score-input::-webkit-outer-spin-button, .qt-score-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.qt-score-input { -moz-appearance: textfield; }
+.qt-grade-badge { font-family:'IBM Plex Mono', monospace; font-size: 11px; font-weight:600; padding: 3px 8px; border-radius: 999px; white-space: nowrap; animation: qt-badge-pop .22s ease; }
+.qt-grade-badge.is-pass { color: var(--teal); background: var(--teal-soft); }
+.qt-grade-badge.is-fail { color: var(--rose); background: var(--rose-soft); }
+@keyframes qt-badge-pop { from { opacity:0; transform: scale(0.85); } to { opacity:1; transform: scale(1); } }
+.qt-status-pill { display:inline-flex; align-items:center; font-size: 11.5px; font-weight:700; padding: 4px 9px; border-radius: 999px; white-space: nowrap; }
+.qt-row-actions { display:flex; gap:4px; opacity: 0.6; }
+.qt-icon-btn { border:none; background:transparent; color: var(--ink-soft); width:26px; height:26px; border-radius:6px; display:flex; align-items:center; justify-content:center; cursor:pointer; }
+.qt-icon-btn:hover { background: var(--paper); color: var(--ink); }
+.qt-icon-btn.danger:hover { background: var(--rose-soft); color: var(--rose); }
+.qt-empty { text-align:center; padding: 50px 20px; color: var(--ink-soft); background: var(--paper-raised); border:1px dashed var(--line); border-radius: 14px; font-size: 13.5px; }
+.qt-completed-section { margin-top: 18px; }
+.qt-completed-toggle { display:flex; align-items:center; gap:8px; width:100%; border:none; background:transparent; padding: 8px 4px; cursor:pointer; color: var(--ink-soft); font-size: 12.5px; font-weight:600; }
+.qt-completed-toggle::after { content:""; flex:1; height:1px; background: var(--line); margin-left: 4px; }
+.qt-completed-toggle:hover { color: var(--ink); }
+.qt-completed-toggle span:first-of-type { font-family:'Fraunces', serif; font-size: 14px; font-weight:600; color: var(--ink); }
+.qt-completed-count { background: var(--paper); border:1px solid var(--line); border-radius: 999px; padding: 1px 8px; font-family:'IBM Plex Mono', monospace; font-size: 11px; }
+.qt-completed-hint { text-transform: uppercase; letter-spacing: 0.04em; font-size: 10.5px; }
+.qt-completed-section .qt-table-wrap { margin-top: 10px; }
+.qt-week-wrap { display:grid; grid-template-columns: repeat(7, 1fr); gap: 10px; }
+.qt-day-col { background: var(--paper-raised); border:1px solid var(--line); border-radius: 12px; padding: 10px; min-height: 160px; display:flex; flex-direction:column; }
+.qt-day-col.is-today { border-color: var(--teal); box-shadow: 0 0 0 1px var(--teal); }
+.qt-day-head { display:flex; justify-content:space-between; align-items:center; font-family:'IBM Plex Mono', monospace; font-size:11.5px; font-weight:600; color: var(--ink-soft); margin-bottom: 8px; }
+.qt-day-col.is-today .qt-day-head { color: var(--teal); }
+.qt-day-count { background: var(--paper); border-radius: 999px; padding: 1px 7px; }
+.qt-day-body { display:flex; flex-direction:column; gap:6px; flex:1; }
+.qt-day-empty { font-size: 11px; color: var(--ink-soft); opacity:0.6; padding-top: 6px; }
+.qt-day-card { display:flex; align-items:center; gap:6px; border:1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 7px 8px; font-size: 12px; text-align:left; cursor:pointer; }
+.qt-day-card.is-complete { opacity: 0.55; text-decoration: line-through; }
+.qt-day-card-name { flex:1; }
+.qt-day-card-check { color: var(--teal); flex-shrink:0; }
+.qt-month-wrap { background: var(--paper-raised); border:1px solid var(--line); border-radius: 14px; padding: 14px; }
+.qt-month-head { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap: 10px; margin-bottom: 12px; }
+.qt-month-nav { display:flex; align-items:center; gap: 8px; }
+.qt-month-title { font-family:'Fraunces', serif; font-size: 18px; font-weight:600; min-width: 150px; text-align:center; }
+.qt-month-summary { display:flex; align-items:center; gap: 10px; }
+.qt-month-today-btn { padding: 6px 11px; font-size: 12px; }
+.qt-month-summary-text { font-size: 12px; color: var(--ink-soft); }
+.qt-month-grid { display:grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.qt-month-weekday { font-family:'IBM Plex Mono', monospace; font-size: 11px; font-weight:600; color: var(--ink-soft); text-align:center; padding-bottom: 4px; }
+.qt-month-cell { background: var(--paper); border:1px solid var(--line); border-radius: 8px; padding: 6px; min-height: 78px; display:flex; flex-direction:column; gap: 4px; }
+.qt-month-cell.is-outside { opacity: 0.4; }
+.qt-month-cell.is-today { border-color: var(--teal); box-shadow: 0 0 0 1px var(--teal); }
+.qt-month-daynum { font-family:'IBM Plex Mono', monospace; font-size: 11px; color: var(--ink-soft); }
+.qt-month-items { display:flex; flex-direction:column; gap: 3px; }
+.qt-month-chip { display:flex; align-items:center; gap:4px; border:none; background: var(--paper-raised); border-radius: 6px; padding: 3px 5px; font-size: 10.5px; cursor:pointer; text-align:left; }
+.qt-month-chip.is-complete { opacity: 0.5; text-decoration: line-through; }
+.qt-month-chip.is-routine-ghost { background: transparent; border: 1px dashed var(--line); color: var(--ink-soft); }
+.qt-month-chip.is-routine-ghost svg { margin-left: auto; flex-shrink: 0; opacity: 0.7; }
+.qt-month-chip-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.qt-month-more { font-size: 10px; color: var(--ink-soft); padding-left: 4px; }
+@media (max-width: 720px) { .qt-month-grid { font-size: 10px; } .qt-month-cell { min-height: 56px; } }
+.qt-modal-overlay { position: fixed; inset:0; background: rgba(28,35,33,0.45); display:flex; align-items:center; justify-content:center; z-index: 50; padding: 20px; }
+.qt-modal { background: var(--paper-raised); border-radius: 16px; padding: 22px; width: 100%; max-width: 440px; max-height: 88vh; overflow-y:auto; }
+.qt-modal-head { display:flex; justify-content:space-between; align-items:center; margin-bottom: 14px; }
+.qt-modal-head h2 { font-family:'Fraunces', serif; font-size: 20px; margin:0; }
+.qt-field { display:flex; flex-direction:column; gap:5px; font-size: 12.5px; color: var(--ink-soft); font-weight:600; margin-bottom: 12px; }
+.qt-field input, .qt-field select { font-family: 'Inter', sans-serif; font-size: 13.5px; color: var(--ink); border:1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-weight: 400; }
+.qt-field-inline { margin-bottom: 0; }
+.qt-field-row { display:flex; flex-direction:column; gap: 8px; margin: 14px 0; padding: 12px; background: var(--paper); border-radius: 10px; }
+.qt-grading-row { gap: 10px; }
+.qt-grading-mode-toggle { display:flex; background: var(--paper-raised); border:1px solid var(--line); border-radius: 8px; padding: 2px; align-self:flex-start; }
+.qt-grading-inputs { display:flex; gap: 10px; }
+.qt-grading-inputs .qt-field { flex:1; }
+.qt-grading-preview { font-size: 12px; padding-top: 2px; }
+.qt-preview-pass { color: var(--teal); font-weight: 600; }
+.qt-preview-fail { color: var(--rose); font-weight: 600; }
+.qt-preview-empty { color: var(--ink-soft); }
+.qt-checkline { display:flex; align-items:center; gap:8px; font-size: 13px; }
+.qt-checkline em { color: var(--ink-soft); font-style: normal; font-size: 11px; }
+.qt-modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top: 8px; }
+.qt-settings-section { margin-bottom: 18px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.qt-settings-section:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+.qt-settings-heading { font-family:'Fraunces', serif; font-size: 15px; font-weight:600; margin: 0 0 8px; }
+.qt-settings-helper { font-size: 12px; color: var(--ink-soft); line-height: 1.5; margin: 0 0 10px; }
+.qt-subject-list { display:flex; flex-direction:column; gap:8px; margin-bottom: 16px; }
+.qt-subject-row { display:flex; align-items:center; justify-content:space-between; gap: 10px; }
+.qt-subject-row-controls { display:flex; align-items:center; gap: 6px; }
+.qt-subject-threshold-input { width: 54px; border:1px solid var(--line); border-radius:6px; padding: 5px 6px; font-family:'IBM Plex Mono', monospace; font-size:12px; text-align:center; }
+.qt-add-subject { display:flex; gap:6px; align-items:center; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid var(--line); }
+.qt-icon-input { width: 42px; text-align:center; border:1px solid var(--line); border-radius:8px; padding: 8px 4px; }
+.qt-name-input { flex:1; min-width: 120px; border:1px solid var(--line); border-radius:8px; padding: 8px 10px; }
+.qt-swatches { display:flex; gap:6px; flex-wrap: wrap; max-width: 100%; }
+.qt-swatch { width:24px; height:24px; border-radius:50%; border: 2px solid transparent; cursor:pointer; box-shadow: 0 0 0 1px var(--line) inset; transition: transform .1s ease; }
+.qt-swatch:hover { transform: scale(1.12); }
+.qt-swatch.active { border-color: var(--ink); box-shadow: none; }
+.qt-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--ink); color:#fff; padding: 10px 18px; border-radius: 10px; font-size: 13px; z-index: 60; box-shadow: 0 8px 24px rgba(0,0,0,0.2); max-width: calc(100vw - 32px); text-align: center; }
+
+/* ================= Charts view ================= */
+.qt-sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+.qt-charts-view { margin-top: 16px; }
+.qt-chart-controls { display:flex; justify-content:flex-end; margin-bottom: 14px; }
+.qt-chart-subject-field { min-width: 220px; }
+.qt-charts-grid { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items:start; }
+.qt-chart-card { grid-column: span 1; background: var(--paper-raised); border:1px solid var(--line); border-radius: 14px; padding: 16px 18px; }
+.qt-chart-card-full { grid-column: 1 / -1; }
+.qt-chart-card-head { margin-bottom: 14px; }
+.qt-chart-card-title { font-family:'Fraunces', serif; font-size: 15px; font-weight:600; margin: 0 0 4px; }
+.qt-chart-card-subtitle { font-size: 12px; color: var(--ink-soft); margin: 0; line-height: 1.4; }
+
+.qt-bar-chart { display:flex; flex-direction:column; gap: 16px; }
+.qt-bar-row { display:grid; grid-template-columns: 132px 1fr 96px; align-items:center; gap: 10px; transition: opacity .15s ease; }
+.qt-bar-row.is-dimmed { opacity: 0.38; }
+.qt-bar-row-label { display:flex; align-items:center; gap:6px; min-width:0; }
+.qt-bar-row-icon { flex-shrink:0; }
+.qt-bar-row-name { font-size: 12.5px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.qt-bar-track { position:relative; height: 14px; background: var(--paper); border:1px solid var(--line); border-radius: 999px; overflow:hidden; }
+.qt-bar-fill { height:100%; border-radius: 999px; transition: width .4s ease; }
+.qt-bar-threshold-tick { position:absolute; top:-2px; bottom:-2px; width:2px; background: var(--gold); z-index:2; }
+.qt-bar-row-value { font-size: 12px; text-align:right; white-space:nowrap; line-height: 1.3; }
+.qt-bar-row-meta { display:block; font-size: 10px; color: var(--ink-soft); font-weight:400; white-space: normal; }
+
+.qt-trend-chart { display:flex; flex-direction:column; gap: 8px; }
+.qt-trend-svg { width:100%; height:auto; display:block; }
+
+/* ================= Mobile / touch responsiveness ================= */
+@media (max-width: 900px) {
+  .qt-week-wrap { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 760px) {
+  .qt-root { padding: 18px 14px; border-radius: 12px; }
+  .qt-title { font-size: 26px; }
+  .qt-subtitle { font-size: 13px; }
+
+  /* Overview: snapshot bar drops the gauge onto its own line, insight cards stack full width */
+  .qt-overview-primary { padding: 12px; gap: 10px; }
+  .qt-mini-stats { gap: 12px; flex: 1 1 100%; justify-content: space-between; }
+  .qt-mini-stat-label { font-size: 10px; }
+  .qt-gauge-card { flex: 1 1 100%; justify-content: center; padding-top: 6px; border-top: 1px dashed var(--line); }
+  .qt-overview-insights { flex-direction: column; }
+  .qt-rec-card, .qt-focus-card { min-width: 0; }
+
+  .qt-toolbar { margin: 16px 0 12px; gap: 8px; }
+  .qt-view-toggle { width: 100%; }
+  .qt-toggle-btn { flex: 1; justify-content:center; white-space: nowrap; padding: 8px 6px; }
+  .qt-toolbar-actions { width: 100%; }
+  .qt-search-wrap { flex: 1 1 auto; min-width: 0; }
+  .qt-search-wrap, .qt-search-input { width: 100%; }
+  .qt-filter-wrap .qt-btn span, .qt-filter-wrap .qt-btn { white-space: nowrap; }
+
+  /* Filters open as a bottom sheet on mobile instead of a small anchored popover */
+  .qt-filters-panel {
+    position: fixed; left: 0; right: 0; bottom: 0; top: auto; width: auto;
+    border-radius: 16px 16px 0 0; max-height: 80vh; overflow-y: auto; padding: 16px;
+    box-shadow: 0 -8px 32px rgba(28,35,33,0.18);
+  }
+  .qt-more-menu { position: fixed; left: 12px; right: 12px; bottom: 12px; top: auto; width: auto; min-width: 0; }
+
+  /* New quiz moves to a floating action button; the inline toolbar button steps aside */
+  .qt-new-quiz-btn { display: none; }
+  .qt-fab {
+    display: flex; align-items:center; justify-content:center; position: fixed; right: 18px; bottom: 18px;
+    width: 52px; height: 52px; border-radius: 50%; border: none; background: var(--ink); color: #fff;
+    box-shadow: 0 8px 24px rgba(28,35,33,0.28); cursor: pointer; z-index: 45;
+  }
+  .qt-fab:active { transform: scale(0.94); }
+
+  /* Roomier tap targets */
+  .qt-icon-btn { width: 34px; height: 34px; }
+  .qt-checkbox { width: 24px; height: 24px; }
+  .qt-btn { padding: 10px 14px; }
+  .qt-score-step-btn { width: 26px; height: 26px; }
+
+  /* iOS zooms the page if a focused input's font-size is under 16px — keep every
+     interactive field at 16px+ on small screens so tapping in never jump-zooms. */
+  .qt-search-input, .qt-select, .qt-score-input, .qt-field input, .qt-field select,
+  .qt-icon-input, .qt-name-input, .qt-subject-threshold-input { font-size: 16px; }
+  .qt-score-input { width: 60px; }
+  .qt-score-input-sm { width: 52px; }
+
+  .qt-modal-overlay { padding: 10px; align-items: flex-end; }
+  .qt-modal { padding: 18px; border-radius: 14px; max-height: 92vh; max-width: 100%; }
+
+  /* Table -> stacked cards. Each <tr> becomes a card; columns that need a label
+     get one from data-label, the checkbox+name pair stay together up top, and
+     the action buttons sit full-width at the bottom. */
+  .qt-table-wrap { overflow-x: visible; background: transparent; border: none; }
+  .qt-table { min-width: 0; width: 100%; border-spacing: 0 10px; border-collapse: separate; }
+  .qt-table thead { display: none; }
+  .qt-table tbody { display: block; }
+  .qt-table tr {
+    display: grid; grid-template-columns: 30px 1fr; align-items: center;
+    gap: 4px 10px; background: var(--paper-raised); border: 1px solid var(--line);
+    border-radius: 12px; padding: 12px; margin-bottom: 10px;
+  }
+  .qt-table tr.is-overdue { border-color: var(--rose); }
+  .qt-table td { display: block; padding: 0; border-bottom: none; }
+  .qt-table td:nth-child(1) { grid-column: 1; grid-row: 1; }
+  .qt-table td:nth-child(2) { grid-column: 2; grid-row: 1; }
+  .qt-table td[data-label] {
+    grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 0 0; margin-top: 8px; border-top: 1px dashed var(--line);
+  }
+  .qt-table td[data-label]::before {
+    content: attr(data-label); font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--ink-soft); flex-shrink: 0;
+  }
+  .qt-table td:last-child { grid-column: 1 / -1; padding-top: 10px; }
+  .qt-table td:last-child .qt-row-actions { justify-content: flex-end; opacity: 1; }
+  .qt-name-cell { cursor: pointer; }
+
+  .qt-month-head { flex-direction: column; align-items: flex-start; }
+  .qt-month-title { min-width: 0; }
+  .qt-grading-inputs { flex-direction: column; }
+  .qt-add-subject { align-items: stretch; }
+  .qt-name-input { width: 100%; }
+
+  .qt-charts-grid { grid-template-columns: 1fr; }
+  .qt-chart-card { padding: 14px; }
+  .qt-chart-controls { justify-content: stretch; }
+  .qt-chart-subject-field { width: 100%; min-width: 0; }
+  .qt-bar-row { grid-template-columns: 92px 1fr 70px; gap: 8px; }
+  .qt-bar-row-name { font-size: 11.5px; }
+  .qt-sort-field-row .qt-select { font-size: 16px; }
+}
+@media (max-width: 480px) {
+  .qt-week-wrap { grid-template-columns: 1fr; }
+  .qt-month-grid { font-size: 9px; }
+  .qt-month-cell { min-height: 44px; padding: 4px; }
+}
+</style>
+</body>
+</html>
