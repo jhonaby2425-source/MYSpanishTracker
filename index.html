@@ -519,8 +519,7 @@ const LEGACY_STORAGE_KEY = "quiz-tracker-state-v1";
       the shared data. Everyone else who connects gets read-only access in
       this app.
 */
-const DRIVE_CLIENT_ID = "685955252889-bqqq2rre6ln77e3nsc9tvi3ea1qjorle.apps.googleusercontent.com
-"; // <-- paste your OAuth Client ID here, e.g. "123-abc.apps.googleusercontent.com"
+const DRIVE_CLIENT_ID = ""; // <-- paste your OAuth Client ID here, e.g. "123-abc.apps.googleusercontent.com"
 
 /* Scopes -------------------------------------------------------------------
    This app is meant for MULTIPLE PEOPLE sharing one quiz library, so
@@ -554,7 +553,29 @@ const DRIVE_FILE_NAME = "spanish-quiz-tracker-data.json";
    deterministic, and immune to duplicate-name mixups if a second file with
    the same name ever turns up. Leaving it blank keeps the old
    search-by-name fallback working, just less precise. */
-const DRIVE_SHARED_FILE_ID = "685955252889-bqqq2rre6ln77e3nsc9tvi3ea1qjorle.apps.googleusercontent.com"; // <-- paste the file ID here after the admin's first connect
+const DRIVE_SHARED_FILE_ID_RAW = "bqqq2rre6ln77e3nsc9tvi3ea1"; // <-- paste the file ID (or the full share link) here after the admin's first connect
+
+// The Drive API's `files/{fileId}` endpoint needs the bare ID, e.g.
+// "1nBZvimHuAMcTgD688rL5YAydgOaraMEI" — NOT the full drive.google.com share
+// link. Pasting the "Copy link" URL (instead of just the ID logged to the
+// console after the admin's first connect) is a common mistake, so this
+// pulls the ID out of the common Drive URL shapes automatically:
+//   https://drive.google.com/file/d/<ID>/view?usp=...
+//   https://drive.google.com/open?id=<ID>
+//   https://docs.google.com/document/d/<ID>/edit
+// and falls through unchanged if it already looks like a bare ID.
+function extractDriveFileId(value) {
+  const v = (value || "").trim();
+  if (!v) return "";
+  const patterns = [/\/d\/([a-zA-Z0-9_-]{10,})/, /[?&]id=([a-zA-Z0-9_-]{10,})/];
+  for (const re of patterns) {
+    const m = v.match(re);
+    if (m) return m[1];
+  }
+  return v; // already a bare ID (or an unrecognized shape — let the API 404 surface it)
+}
+
+const DRIVE_SHARED_FILE_ID = extractDriveFileId(DRIVE_SHARED_FILE_ID_RAW);
 
 /* Fail-safe role gate --------------------------------------------------------
    Empty array = role-checking OFF = everyone who connects is treated as
@@ -859,7 +880,7 @@ function App() {
 
   const connectDrive = async (interactive = true) => {
     if (!driveIsConfigured()) {
-      if (interactive) showToast("Google Drive isn't set up yet — add an OAuth Client ID in the code first.");
+      if (interactive) showToast("Google Drive isn't set up yet — set DRIVE_CLIENT_ID near the top of the script to your OAuth Client ID.");
       return;
     }
     if (driveConnectingRef.current) return;
