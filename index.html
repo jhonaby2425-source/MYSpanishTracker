@@ -675,6 +675,24 @@ async function driveApiFetchJson(url, token, options = {}) {
   return res.status === 204 ? null : res.json();
 }
 
+// Wraps a Drive API call with a one-time silent-refresh-and-retry when the
+// access token has expired (401). GIS access tokens are short-lived
+// (~1 hour) and this app doesn't proactively refresh them, so a tab left
+// open past that point would otherwise show a generic "Couldn't sync to
+// Drive" error indefinitely, with no way to recover short of manually
+// disconnecting and reconnecting. `onTokenRefreshed` lets the caller persist
+// the new token (e.g. into driveTokenRef) once we have it.
+async function driveCallWithRefresh(getToken, onTokenRefreshed, fn) {
+  try {
+    return await fn(getToken());
+  } catch (e) {
+    if (e.status !== 401) throw e;
+    const freshToken = await driveRequestToken(false); // silent, no popup
+    onTokenRefreshed(freshToken);
+    return await fn(freshToken);
+  }
+}
+
 async function driveFetchEmail(token) {
   const data = await driveApiFetchJson("https://www.googleapis.com/oauth2/v3/userinfo", token);
   return data?.email || null;
@@ -963,10 +981,14 @@ function App() {
     if (!driveIsAdmin || !driveFileId || !driveTokenRef.current) return false;
     setDriveSyncStatus("syncing");
     try {
-      const newModifiedTime = await driveUpdateFile(
-        driveTokenRef.current, driveFileId,
-        { subjects, quizzes, settings, historyLog, syncedAt: new Date().toISOString() },
-        driveModifiedTimeRef.current
+      const newModifiedTime = await driveCallWithRefresh(
+        () => driveTokenRef.current,
+        (t) => { driveTokenRef.current = t; },
+        (token) => driveUpdateFile(
+          token, driveFileId,
+          { subjects, quizzes, settings, historyLog, syncedAt: new Date().toISOString() },
+          driveModifiedTimeRef.current
+        )
       );
       driveModifiedTimeRef.current = newModifiedTime;
       setDriveSyncStatus("synced");
@@ -981,6 +1003,18 @@ function App() {
         } catch (e2) {
           setDriveConflict({ remoteContent: null, remoteModifiedTime: e.remoteModifiedTime });
         }
+      } else if (e.status === 401) {
+        // Silent refresh above already failed (e.g. the user revoked access,
+        // or too much time has passed for a token-free refresh) — this
+        // needs an interactive reconnect, which we can't trigger without a
+        // user gesture, so surface it clearly instead of retrying forever.
+        // Note: driveStatus stays "connected" (not "error") so the status
+        // badge — which only renders while connected — stays visible to
+        // show this.
+        console.error("Drive session expired and silent refresh failed", e);
+        setDriveSyncStatus("error");
+        setDriveError("Your Drive session expired.");
+        showToast("Drive session expired — reconnect Google Drive from the ⋯ menu");
       } else {
         console.error("Drive push failed", e);
         setDriveSyncStatus("error");
@@ -1009,16 +1043,30 @@ function App() {
     }
     setDriveSyncStatus("syncing");
     try {
-      const meta = await driveApiFetchJson(`${DRIVE_API}/${driveFileId}?fields=modifiedTime`, driveTokenRef.current);
-      const remote = await driveDownloadFile(driveTokenRef.current, driveFileId);
+      const meta = await driveCallWithRefresh(
+        () => driveTokenRef.current,
+        (t) => { driveTokenRef.current = t; },
+        (token) => driveApiFetchJson(`${DRIVE_API}/${driveFileId}?fields=modifiedTime`, token)
+      );
+      const remote = await driveCallWithRefresh(
+        () => driveTokenRef.current,
+        (t) => { driveTokenRef.current = t; },
+        (token) => driveDownloadFile(token, driveFileId)
+      );
       applyRemoteContent(remote);
       driveModifiedTimeRef.current = meta?.modifiedTime || driveModifiedTimeRef.current;
       setDriveSyncStatus("synced");
       showToast("Refreshed from Drive");
     } catch (e) {
       console.error("Drive refresh failed", e);
-      setDriveSyncStatus("error");
-      showToast("Couldn't refresh from Drive");
+      if (e.status === 401) {
+        setDriveSyncStatus("error");
+        setDriveError("Your Drive session expired.");
+        showToast("Drive session expired — reconnect Google Drive from the ⋯ menu");
+      } else {
+        setDriveSyncStatus("error");
+        showToast("Couldn't refresh from Drive");
+      }
     }
   };
 
