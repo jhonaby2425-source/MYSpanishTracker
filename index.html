@@ -791,6 +791,11 @@ function App() {
   const drivePushTimer = useRef(null);
   const suppressNextPushRef = useRef(false);
   const driveConnectingRef = useRef(false);
+  // True whenever local state has changed since the last successful push —
+  // i.e. there's a debounced push either pending or in flight. Lets
+  // refreshFromDrive() and the unload handler avoid pulling stale remote
+  // data on top of an edit that hasn't reached Drive yet.
+  const hasPendingLocalChangesRef = useRef(false);
   const isReadOnly = driveStatus === "connected" && !driveIsAdmin;
 
   useEffect(() => {
@@ -936,6 +941,8 @@ function App() {
     await driveRevokeToken(driveTokenRef.current);
     driveTokenRef.current = null;
     driveModifiedTimeRef.current = null;
+    hasPendingLocalChangesRef.current = false;
+    if (drivePushTimer.current) { clearTimeout(drivePushTimer.current); drivePushTimer.current = null; }
     setDriveStatus("disconnected");
     setDriveEmail(null);
     setDriveIsAdmin(false);
@@ -947,8 +954,59 @@ function App() {
     showToast("Disconnected from Drive");
   };
 
+  // Pushes the current local state to Drive right now (no debounce wait).
+  // Shared by: the debounced auto-push effect, the manual "Push to Drive"
+  // menu action, and refreshFromDrive's pre-pull flush below. Returns true
+  // on success so callers can decide whether it's safe to proceed (e.g.
+  // whether it's safe to then overwrite local state with a pulled copy).
+  const pushToDriveNow = async () => {
+    if (!driveIsAdmin || !driveFileId || !driveTokenRef.current) return false;
+    setDriveSyncStatus("syncing");
+    try {
+      const newModifiedTime = await driveUpdateFile(
+        driveTokenRef.current, driveFileId,
+        { subjects, quizzes, settings, historyLog, syncedAt: new Date().toISOString() },
+        driveModifiedTimeRef.current
+      );
+      driveModifiedTimeRef.current = newModifiedTime;
+      setDriveSyncStatus("synced");
+      hasPendingLocalChangesRef.current = false;
+      return true;
+    } catch (e) {
+      if (e.isConflict) {
+        setDriveSyncStatus("conflict");
+        try {
+          const remoteContent = await driveDownloadFile(driveTokenRef.current, driveFileId);
+          setDriveConflict({ remoteContent, remoteModifiedTime: e.remoteModifiedTime });
+        } catch (e2) {
+          setDriveConflict({ remoteContent: null, remoteModifiedTime: e.remoteModifiedTime });
+        }
+      } else {
+        console.error("Drive push failed", e);
+        setDriveSyncStatus("error");
+        showToast("Couldn't sync to Drive — will retry on your next change");
+      }
+      return false;
+    }
+  };
+
   const refreshFromDrive = async () => {
     if (driveStatus !== "connected" || !driveFileId || !driveTokenRef.current) return;
+    // Guard: if there's a local edit that hasn't reached Drive yet (either
+    // still waiting out the debounce, or mid-flight), pulling the remote
+    // copy now would silently overwrite it — the exact bug where marking a
+    // quiz complete on one device and refreshing before the auto-push
+    // fires makes the change vanish. Push first; only pull once we know
+    // Drive actually has our latest state.
+    if (driveIsAdmin && hasPendingLocalChangesRef.current) {
+      if (drivePushTimer.current) { clearTimeout(drivePushTimer.current); drivePushTimer.current = null; }
+      showToast("Pushing your changes before refreshing…");
+      const pushed = await pushToDriveNow();
+      if (!pushed) {
+        showToast("Couldn't push your changes — refresh cancelled so nothing gets overwritten");
+        return;
+      }
+    }
     setDriveSyncStatus("syncing");
     try {
       const meta = await driveApiFetchJson(`${DRIVE_API}/${driveFileId}?fields=modifiedTime`, driveTokenRef.current);
@@ -996,35 +1054,47 @@ function App() {
   useEffect(() => {
     if (!loaded || driveStatus !== "connected" || !driveIsAdmin || !driveFileId) return;
     if (suppressNextPushRef.current) { suppressNextPushRef.current = false; return; }
+    // Marked true immediately (not just once the timer fires) so that
+    // switching devices, hitting "Refresh from Drive", or closing the tab
+    // during the debounce window is detected as an unsynced change rather
+    // than silently discarded.
+    hasPendingLocalChangesRef.current = true;
     if (drivePushTimer.current) clearTimeout(drivePushTimer.current);
-    drivePushTimer.current = setTimeout(async () => {
-      setDriveSyncStatus("syncing");
-      try {
-        const newModifiedTime = await driveUpdateFile(
-          driveTokenRef.current, driveFileId,
-          { subjects, quizzes, settings, historyLog, syncedAt: new Date().toISOString() },
-          driveModifiedTimeRef.current
-        );
-        driveModifiedTimeRef.current = newModifiedTime;
-        setDriveSyncStatus("synced");
-      } catch (e) {
-        if (e.isConflict) {
-          setDriveSyncStatus("conflict");
-          try {
-            const remoteContent = await driveDownloadFile(driveTokenRef.current, driveFileId);
-            setDriveConflict({ remoteContent, remoteModifiedTime: e.remoteModifiedTime });
-          } catch (e2) {
-            setDriveConflict({ remoteContent: null, remoteModifiedTime: e.remoteModifiedTime });
-          }
-        } else {
-          console.error("Drive push failed", e);
-          setDriveSyncStatus("error");
-          showToast("Couldn't sync to Drive — will retry on your next change");
-        }
-      }
-    }, 2500);
+    drivePushTimer.current = setTimeout(() => { pushToDriveNow(); }, 2500);
     return () => clearTimeout(drivePushTimer.current);
   }, [subjects, quizzes, settings, historyLog, loaded, driveStatus, driveIsAdmin, driveFileId]);
+
+  // Best-effort flush when the tab is backgrounded or closed. This is the
+  // other half of the fix above: even with the pre-pull guard, a change
+  // made right before switching devices could otherwise sit unpushed for
+  // up to 2.5s. `keepalive: true` lets the request outlive page teardown in
+  // supporting browsers. It's fire-and-forget (no conflict re-check, no UI
+  // feedback) by necessity — there's no time left to await a round trip
+  // once the page is being torn down — so it's a safety net on top of the
+  // normal debounced push, not a replacement for it.
+  useEffect(() => {
+    const flushDriveOnHide = () => {
+      if (!hasPendingLocalChangesRef.current) return;
+      if (!driveIsAdmin || !driveFileId || !driveTokenRef.current) return;
+      if (drivePushTimer.current) { clearTimeout(drivePushTimer.current); drivePushTimer.current = null; }
+      try {
+        const body = JSON.stringify({ subjects, quizzes, settings, historyLog, syncedAt: new Date().toISOString() });
+        fetch(`${DRIVE_UPLOAD_API}/${driveFileId}?uploadType=media&fields=modifiedTime`, {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${driveTokenRef.current}`, "Content-Type": "application/json" },
+          body,
+          keepalive: true,
+        }).catch(() => {});
+      } catch (e) { /* best-effort only */ }
+    };
+    const onVisibilityChange = () => { if (document.visibilityState === "hidden") flushDriveOnHide(); };
+    window.addEventListener("pagehide", flushDriveOnHide);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("pagehide", flushDriveOnHide);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [subjects, quizzes, settings, historyLog, driveIsAdmin, driveFileId]);
 
   // Attempt a silent (no popup) reconnect once local data has loaded, if the
   // user previously connected. Never persists the token itself — only this
@@ -1488,6 +1558,22 @@ function App() {
                     <div className="qt-more-menu-label">
                       Drive: {driveEmail} {driveIsAdmin ? "(admin)" : "(read-only)"}
                     </div>
+                    {driveIsAdmin && (
+                      <button
+                        type="button"
+                        className="qt-more-menu-item"
+                        disabled={driveSyncStatus === "syncing"}
+                        onClick={async () => {
+                          setShowMoreMenu(false);
+                          if (drivePushTimer.current) { clearTimeout(drivePushTimer.current); drivePushTimer.current = null; }
+                          const ok = await pushToDriveNow();
+                          showToast(ok ? "Pushed to Drive" : "Couldn't push to Drive — see the sync status badge");
+                        }}
+                        title="Push your local changes to Drive immediately, instead of waiting for auto-sync"
+                      >
+                        <Icon name="cloud" size={15}/> Push to Drive now
+                      </button>
+                    )}
                     <button type="button" className="qt-more-menu-item" onClick={() => { refreshFromDrive(); setShowMoreMenu(false); }}>
                       <Icon name="cloud" size={15}/> Refresh from Drive
                     </button>
