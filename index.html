@@ -271,27 +271,6 @@ const seedQuizzes = () => [
   { id: uid("q"), name: "SER vs ESTAR", subjectId: "sub-estar", dueDate: "", isRoutine: true, scheduledDay: "Sat", completed: false, trackScore: false, totalItems: 245, correctItems: null, score: null, description: "ROUTINE", link: "", completedAt: null, completedWeek: null },
 ];
 
-/* ---------- routine "next occurrence" date ----------
-   Routine quizzes are scheduled to a weekday (e.g. "Mon"), not a calendar
-   date, so they normally show no Due date. This computes the next upcoming
-   calendar date that weekday falls on (today counts as "next" if it matches),
-   purely for display — it's informational, not a real deadline, so it never
-   feeds into overdue logic. */
-const WEEKDAY_TO_JSIDX = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-function getNextRoutineDate(scheduledDay, fromISO) {
-  if (!scheduledDay || !(scheduledDay in WEEKDAY_TO_JSIDX)) return null;
-  const from = fromISO ? new Date(fromISO + "T00:00:00") : new Date();
-  const targetJsDay = WEEKDAY_TO_JSIDX[scheduledDay];
-  const diff = (targetJsDay - from.getDay() + 7) % 7;
-  const next = new Date(from);
-  next.setDate(from.getDate() + diff);
-  return next.toISOString().slice(0, 10);
-}
-function formatShortDate(iso) {
-  if (!iso) return "";
-  const [y, m, d] = iso.split("-").map(Number);
-  return `${MONTH_NAMES[m - 1].slice(0, 3)} ${d}`;
-}
 
 function dayCounts(quizzes) {
   const counts = Object.fromEntries(WEEKDAYS.map((d) => [d, 0]));
@@ -1959,12 +1938,15 @@ function QuizTable({ quizzes, subjectMap, settings, todayISO, visibleColumns, su
                       <span className={isOverdue ? "qt-overdue-text" : ""}>
                         {q.dueDate}{isOverdue && <span className="qt-overdue-tag"><Icon name="alertCircle" size={11}/> overdue</span>}
                       </span>
-                    ) : (q.isRoutine && q.scheduledDay) ? (
-                      <span className="qt-routine-next-date" title={`Computed from its ${q.scheduledDay} weekly schedule, not a fixed deadline`}>
-                        {formatShortDate(getNextRoutineDate(q.scheduledDay, todayISO))}
-                        <span className="qt-routine-next-tag">next</span>
-                      </span>
-                    ) : "—"}
+                    ) : (
+                      // Routine quizzes have no fixed calendar deadline — their
+                      // weekday is already shown in the Routine column. Showing a
+                      // projected future date here as well made every routine
+                      // item look like it was scheduled in advance, which isn't
+                      // what's happening: it's just due "this cycle," on its
+                      // weekday, same as every week.
+                      "—"
+                    )}
                   </td>
                 )}
                 {visibleColumns.routine && (
@@ -2678,8 +2660,6 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 .qt-table tr.is-complete .qt-name { color: var(--ink-soft); text-decoration: line-through; }
 .qt-overdue-text { color: var(--rose); font-weight: 600; }
 .qt-overdue-tag { display:inline-flex; align-items:center; gap:3px; margin-left:6px; font-size:10.5px; font-weight:700; letter-spacing:0.03em; text-transform:uppercase; color: var(--rose); }
-.qt-routine-next-date { display:inline-flex; align-items:center; gap:5px; color: var(--ink-soft); font-style: italic; }
-.qt-routine-next-tag { font-family:'Inter', sans-serif; font-style: normal; font-size:9.5px; font-weight:700; letter-spacing:0.05em; text-transform:uppercase; color: var(--ink-soft); background: var(--paper); border: 1px solid var(--line); border-radius: 999px; padding: 1px 6px; }
 .qt-current-week-tag { font-family:'Inter', sans-serif; font-size:9.5px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; margin-left:5px; opacity: 0.8; }
 .qt-checkbox { width:20px; height:20px; border-radius:6px; border:1.5px solid var(--line); background:#fff; display:flex; align-items:center; justify-content:center; cursor:pointer; color:#fff; }
 .qt-checkbox.checked { background: var(--teal); border-color: var(--teal); }
