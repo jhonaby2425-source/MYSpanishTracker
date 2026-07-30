@@ -1973,13 +1973,15 @@ function QuizTable({ quizzes, subjectMap, settings, todayISO, visibleColumns, su
                       <span className={isOverdue ? "qt-overdue-text" : ""}>
                         {q.dueDate}{isOverdue && <span className="qt-overdue-tag"><Icon name="alertCircle" size={11}/> overdue</span>}
                       </span>
+                    ) : (q.isRoutine && isOverdue) ? (
+                      // Explains the Overdue status pill instead of leaving it
+                      // unexplained: this week's occurrence of the scheduled
+                      // weekday has already passed without completion.
+                      <span className="qt-overdue-text">
+                        Missed {q.scheduledDay}
+                        <span className="qt-overdue-tag"><Icon name="alertCircle" size={11}/> overdue</span>
+                      </span>
                     ) : (
-                      // Routine quizzes have no fixed calendar deadline — their
-                      // weekday is already shown in the Routine column. Showing a
-                      // projected future date here as well made every routine
-                      // item look like it was scheduled in advance, which isn't
-                      // what's happening: it's just due "this cycle," on its
-                      // weekday, same as every week.
                       "—"
                     )}
                   </td>
