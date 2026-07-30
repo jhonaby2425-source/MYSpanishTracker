@@ -164,7 +164,11 @@ function getGrade(q, subject, settings) {
    - "completed": marked done, not graded (nothing to compare) */
 function getQuizStatus(q, subject, settings, todayISO) {
   if (!q.completed) {
-    if (q.dueDate && q.dueDate < todayISO) return "overdue";
+    // Only one-off quizzes have a real fixed deadline. Routine quizzes recur
+    // every week on their scheduled weekday and are reset by
+    // performWeeklyRollover — they have no fixed deadline to fall behind on,
+    // so a leftover/legacy dueDate value must never mark them "overdue".
+    if (!q.isRoutine && q.dueDate && q.dueDate < todayISO) return "overdue";
     return "incomplete";
   }
   if (q.trackScore) {
@@ -1951,7 +1955,7 @@ function QuizTable({ quizzes, subjectMap, settings, todayISO, visibleColumns, su
                 {visibleColumns.subject && <td data-label="Subject"><span className="qt-subject-pill" style={{ background: subj.soft, color: subj.color, borderColor: subj.color }}>{subj.icon} {subj.name}</span></td>}
                 {visibleColumns.dueDate && (
                   <td data-label="Due date" className="qt-mono">
-                    {q.dueDate ? (
+                    {(!q.isRoutine && q.dueDate) ? (
                       <span className={isOverdue ? "qt-overdue-text" : ""}>
                         {q.dueDate}{isOverdue && <span className="qt-overdue-tag"><Icon name="alertCircle" size={11}/> overdue</span>}
                       </span>
@@ -2299,7 +2303,7 @@ function MonthView({ quizzes, subjectMap, settings, todayISO, onToggleComplete, 
   const monthPrefix = `${cursor.year}-${pad2(cursor.month + 1)}`;
   const byDate = useMemo(() => {
     const map = {};
-    quizzes.forEach((q) => { if (q.dueDate) { (map[q.dueDate] = map[q.dueDate] || []).push(q); } });
+    quizzes.forEach((q) => { if (!q.isRoutine && q.dueDate) { (map[q.dueDate] = map[q.dueDate] || []).push(q); } });
     return map;
   }, [quizzes]);
   /* Routine quizzes without a fixed due date recur weekly on their scheduled
@@ -2312,7 +2316,7 @@ function MonthView({ quizzes, subjectMap, settings, todayISO, onToggleComplete, 
     quizzes.forEach((q) => { if (q.isRoutine && q.scheduledDay && !q.dueDate) map[q.scheduledDay].push(q); });
     return map;
   }, [quizzes]);
-  const monthQuizzes = useMemo(() => quizzes.filter((q) => q.dueDate && q.dueDate.startsWith(monthPrefix)), [quizzes, monthPrefix]);
+  const monthQuizzes = useMemo(() => quizzes.filter((q) => !q.isRoutine && q.dueDate && q.dueDate.startsWith(monthPrefix)), [quizzes, monthPrefix]);
   const monthCompleted = monthQuizzes.filter((q) => q.completed).length;
 
   const goPrev = () => setCursor((c) => { const m = c.month - 1 < 0 ? 11 : c.month - 1; const y = c.month - 1 < 0 ? c.year - 1 : c.year; return { year: y, month: m }; });
@@ -2386,6 +2390,14 @@ function QuizModal({ subjects, settings, initial, onClose, onSave }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
+  // A quiz is either scheduled to a weekday (Routine) or to a fixed calendar
+  // date (Due date) — never both. Without this, someone could tag a quiz as
+  // Routine, also leave an old/expired due date on it, and see it stuck
+  // "Overdue" forever even though it resets and recurs every week.
+  useEffect(() => {
+    if (isRoutine && dueDate) setDueDate("");
+  }, [isRoutine]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const subject = subjects.find((s) => s.id === subjectId);
   const threshold = getThreshold(subject, settings);
   const previewPercent = scoreMode === "items"
@@ -2419,7 +2431,14 @@ function QuizModal({ subjects, settings, initial, onClose, onSave }) {
         <div className="qt-modal-head"><h2>{initial ? "Edit quiz" : "New quiz"}</h2><button type="button" className="qt-icon-btn" onClick={onClose} aria-label="Close"><Icon name="x" size={16}/></button></div>
         <label className="qt-field"><span>Name</span><input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Lesson INT-5" required /></label>
         <label className="qt-field"><span>Subject</span><select value={subjectId} onChange={(e) => setSubjectId(e.target.value)}>{subjects.map((s) => (<option key={s.id} value={s.id}>{s.icon} {s.name}</option>))}</select></label>
-        <label className="qt-field"><span>Due date (optional)</span><input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></label>
+        {!isRoutine && (
+          <label className="qt-field"><span>Due date (optional)</span><input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></label>
+        )}
+        {isRoutine && (
+          <p className="qt-settings-helper" style={{ margin: "-4px 0 12px" }}>
+            Routine quizzes recur on their scheduled weekday instead of a fixed due date, so this quiz won't ever show as "Overdue" — it just resets and reappears each week.
+          </p>
+        )}
         <label className="qt-field"><span>Quiz link (optional)</span><input type="url" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://…" /></label>
         <label className="qt-field"><span>Notes</span><input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional description" /></label>
         <div className="qt-field-row">
