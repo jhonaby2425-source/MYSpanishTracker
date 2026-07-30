@@ -116,6 +116,19 @@ const DEFAULT_SETTINGS = {
 
 const uid = (p = "id") => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+// The user's actual local calendar date as YYYY-MM-DD. Deliberately NOT
+// date.toISOString().slice(0,10) — that reports the UTC date, which drifts
+// a calendar day away from local "today" for several hours around midnight
+// in any timezone ahead of or behind UTC (e.g. UTC+8). Every "what day is it
+// right now, for scheduling purposes" check in this app should agree on the
+// same local day, so it's centralized here.
+function toLocalISODate(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 // Given a full quiz name and the list of existing quiz names in the project,
 // returns the next available "Name (N)" variant that doesn't collide with
 // anything already in the list. The original name is NEVER altered/stripped —
@@ -162,13 +175,35 @@ function getGrade(q, subject, settings) {
    - "overdue": not marked done, and the due date has passed
    - "passed" / "failed": marked done, graded, compared against the pass threshold
    - "completed": marked done, not graded (nothing to compare) */
+/* ---------- routine "due this week" date ----------
+   A routine quiz recurs every week on a fixed weekday (scheduledDay). Its
+   due-ness for overdue purposes is computed FRESH every time from "has this
+   week's occurrence of that weekday already passed?" — never from a stored
+   date. That's the difference between a quiz that's legitimately overdue
+   (its scheduled day this week came and went, still not done) and a quiz
+   that looks overdue just because a stale value from a previous cycle never
+   got updated. Because it's recomputed from today's date every render, a
+   freshly-rolled-over week always starts clean: nothing is overdue until
+   its scheduled day actually arrives and passes again. */
+function getScheduledDateThisWeek(scheduledDay, todayISO) {
+  const idx = WEEKDAYS.indexOf(scheduledDay); // WEEKDAYS = [Mon..Sun], 0-indexed
+  if (idx === -1) return null;
+  const today = new Date(todayISO + "T00:00:00");
+  const todayIdx = (today.getDay() + 6) % 7; // JS getDay() is 0=Sun; convert to 0=Mon
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - todayIdx);
+  const scheduled = new Date(monday);
+  scheduled.setDate(monday.getDate() + idx);
+  return toLocalISODate(scheduled);
+}
 function getQuizStatus(q, subject, settings, todayISO) {
   if (!q.completed) {
-    // Only one-off quizzes have a real fixed deadline. Routine quizzes recur
-    // every week on their scheduled weekday and are reset by
-    // performWeeklyRollover — they have no fixed deadline to fall behind on,
-    // so a leftover/legacy dueDate value must never mark them "overdue".
-    if (!q.isRoutine && q.dueDate && q.dueDate < todayISO) return "overdue";
+    if (q.isRoutine) {
+      const scheduledISO = getScheduledDateThisWeek(q.scheduledDay, todayISO);
+      if (scheduledISO && scheduledISO < todayISO) return "overdue";
+      return "incomplete";
+    }
+    if (q.dueDate && q.dueDate < todayISO) return "overdue";
     return "incomplete";
   }
   if (q.trackScore) {
@@ -1203,14 +1238,14 @@ function App() {
           if (q.id !== data.id) return q;
           let completionFields = {};
           if (data.completed && !q.completed) {
-            completionFields = { completedAt: new Date().toISOString().slice(0, 10), completedWeek: getISOWeek(new Date()) };
+            completionFields = { completedAt: toLocalISODate(), completedWeek: getISOWeek(new Date()) };
           } else if (!data.completed && q.completed) {
             completionFields = { completedAt: null, completedWeek: null };
           }
           return { ...q, ...data, scheduledDay, ...completionFields };
         });
       }
-      const completionFields = data.completed ? { completedAt: new Date().toISOString().slice(0, 10), completedWeek: getISOWeek(new Date()) } : {};
+      const completionFields = data.completed ? { completedAt: toLocalISODate(), completedWeek: getISOWeek(new Date()) } : {};
       return [...qs, { ...data, id: uid("q"), scheduledDay, ...completionFields }];
     });
     showToast(data.id ? "Quiz updated" : "Quiz added");
@@ -1249,7 +1284,7 @@ function App() {
       if (q.id !== id) return q;
       const turningOn = !q.completed;
       if (turningOn) {
-        return { ...q, completed: true, completedAt: new Date().toISOString().slice(0, 10), completedWeek: getISOWeek(new Date()) };
+        return { ...q, completed: true, completedAt: toLocalISODate(), completedWeek: getISOWeek(new Date()) };
       }
       return { ...q, completed: false, completedAt: null, completedWeek: null };
     }));
@@ -1332,7 +1367,7 @@ function App() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `spanish-quiz-tracker-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `spanish-quiz-tracker-backup-${toLocalISODate()}.json`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -1368,7 +1403,7 @@ function App() {
     }
   };
 
-  const todayISO = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const todayISO = useMemo(() => toLocalISODate(), []);
   const subjectStats = useMemo(() => getSubjectStats(quizzes, settings, subjectMap), [quizzes, settings, subjectMap]);
   const weakestSubject = useMemo(() => getWeakestSubject(subjectStats, subjectMap), [subjectStats, subjectMap]);
 
