@@ -101,7 +101,12 @@ function Icon({ name, size = 15, ...props }) {
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-const TODAY_IDX = (new Date().getDay() + 6) % 7;
+// NOTE: "today"'s weekday index is intentionally NOT a module-level constant.
+// A `const` computed at script-parse time is frozen for the entire life of
+// the tab — it would never notice a day (or week) boundary passing while the
+// app stays open. WeekView derives its index live from the `todayISO` prop
+// instead (see App's live-clock effect below for why that prop itself is
+// kept fresh).
 
 const DEFAULT_SUBJECTS = [
   { id: "sub-lessons", name: "Spanish Lessons Series", icon: "📘", color: "#1F6F63", soft: "#DCEFE9", passThreshold: null },
@@ -793,6 +798,12 @@ function App() {
   const [quizzes, setQuizzes] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [historyLog, setHistoryLog] = useState([]);
+  // The single source of truth every date-relative check in this app reads:
+  // overdue detection, routine "due this week" math, priority sorting, and
+  // the calendar's "today" marker. Kept live by the clock effect further
+  // down — see that effect's comment for why a one-time computation isn't
+  // enough for an app people leave open in a background tab for days.
+  const [todayISO, setTodayISO] = useState(() => toLocalISODate());
   const [view, setView] = useState("table");
   const [filterSubject, setFilterSubject] = useState("all");
   const [filterStatus, setFilterStatus] = useState("all");
@@ -1174,13 +1185,40 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
 
-  /* ---------- weekly rollover for routine quizzes ----------
-     Once a routine quiz has been completed, it stays checked off until the ISO
-     week changes. At that point we archive the completed attempt into
-     historyLog (so it's never lost) and reset the quiz back to "not completed"
-     with a blank score, ready to be done again this week. Runs on load and
-     then re-checks hourly in case the tab is left open across the week
-     boundary. */
+  /* ---------- live clock + weekly rollover for routine quizzes ----------
+     ROOT CAUSE OF THE REPORTED BUG: `todayISO` used to be computed once via
+     `useMemo(() => toLocalISODate(), [])` — an empty dependency array means
+     it is calculated exactly once, the moment the component first mounts,
+     and then frozen for the entire lifetime of the tab. This app is exactly
+     the kind of thing people leave pinned open in a background tab for
+     days; a tab does NOT re-render on its own just because midnight (or an
+     ISO week boundary) quietly passed. So the *reset* below was still
+     firing correctly (it always read `new Date()` fresh), but every
+     date-relative check that depended on the frozen `todayISO` — routine
+     "has this week's scheduled day passed?" overdue detection, priority
+     sorting, and the Week/Month view's "today" marker — kept judging
+     against whatever day the tab happened to be opened on. From the
+     outside that reads as "the routine quiz isn't repeating this week": a
+     routine quiz can silently reset back to incomplete underneath a UI
+     that's still reasoning about a stale day, so it never gets flagged as
+     due/overdue on schedule.
+
+     Fix: `todayISO` is now state (declared near the top of this component),
+     and this effect keeps it — and the weekly rollover check — fresh by
+     re-running:
+       1. once on load,
+       2. every 60s while the tab is open (cheap: a string compare, plus an
+          array scan that only produces a state update when something
+          actually changed),
+       3. immediately whenever the tab regains focus/visibility — because
+          browsers throttle or fully pause background-tab timers (e.g. a
+          laptop that sleeps overnight), so a slow interval alone can't be
+          trusted to catch a day/week change promptly on wake.
+
+     Once a routine quiz has been completed, it stays checked off until the
+     ISO week changes. At that point we archive the completed attempt into
+     historyLog (so it's never lost) and reset the quiz back to "not
+     completed" with a blank score, ready to be done again this week. */
   const performWeeklyRollover = () => {
     const currentWeek = getISOWeek(new Date());
     setQuizzes((qs) => {
@@ -1204,11 +1242,24 @@ function App() {
       return qs;
     });
   };
+  const syncClock = () => {
+    const nowISO = toLocalISODate();
+    setTodayISO((prev) => (prev === nowISO ? prev : nowISO));
+    performWeeklyRollover();
+  };
   useEffect(() => {
     if (!loaded) return;
-    performWeeklyRollover();
-    const interval = setInterval(performWeeklyRollover, 60 * 60 * 1000);
-    return () => clearInterval(interval);
+    syncClock();
+    const interval = setInterval(syncClock, 60 * 1000);
+    const onVisibilityChange = () => { if (document.visibilityState === "visible") syncClock(); };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", syncClock);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", syncClock);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
 
   const subjectMap = useMemo(() => Object.fromEntries(subjects.map((s) => [s.id, s])), [subjects]);
@@ -1403,7 +1454,6 @@ function App() {
     }
   };
 
-  const todayISO = useMemo(() => toLocalISODate(), []);
   const subjectStats = useMemo(() => getSubjectStats(quizzes, settings, subjectMap), [quizzes, settings, subjectMap]);
   const weakestSubject = useMemo(() => getWeakestSubject(subjectStats, subjectMap), [subjectStats, subjectMap]);
 
@@ -1694,7 +1744,7 @@ function App() {
         </>
       )}
       {view === "week" && (
-        <WeekView quizzes={quizzes} subjectMap={subjectMap} counts={counts} onToggleComplete={toggleComplete} />
+        <WeekView quizzes={quizzes} subjectMap={subjectMap} counts={counts} todayISO={todayISO} onToggleComplete={toggleComplete} />
       )}
       {view === "month" && (
         <MonthView quizzes={quizzes} subjectMap={subjectMap} settings={settings} todayISO={todayISO}
@@ -2282,13 +2332,20 @@ function ChartsView({ quizzes, historyLog, subjects, subjectMap, settings, subje
   );
 }
 
-function WeekView({ quizzes, subjectMap, counts, onToggleComplete }) {
+function WeekView({ quizzes, subjectMap, counts, todayISO, onToggleComplete }) {
+  // Recomputed on every render from the live todayISO prop (not a frozen
+  // constant) so the "today" column marker stays correct even in a tab
+  // that's been left open across a day or week boundary.
+  const todayIdx = useMemo(() => {
+    const d = new Date(todayISO + "T00:00:00");
+    return (d.getDay() + 6) % 7;
+  }, [todayISO]);
   return (
     <div className="qt-week-wrap">
       {WEEKDAYS.map((day, i) => {
         const items = quizzes.filter((q) => q.isRoutine && q.scheduledDay === day);
         return (
-          <div className={`qt-day-col ${i === TODAY_IDX ? "is-today" : ""}`} key={day}>
+          <div className={`qt-day-col ${i === todayIdx ? "is-today" : ""}`} key={day}>
             <div className="qt-day-head"><span>{day}</span><span className="qt-day-count">{counts[day] || 0}</span></div>
             <div className="qt-day-body">
               {items.length === 0 && <div className="qt-day-empty">No routine quizzes</div>}
